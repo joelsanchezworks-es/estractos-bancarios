@@ -218,14 +218,193 @@ function rowsToMovimientos(rows: unknown[][], columns: ColumnMap): MovimientoRaw
 }
 
 // ---------------------------------------------------------------------------
+// Budget (presupuesto) format
+// ---------------------------------------------------------------------------
+
+/** Result of parsing a table: movements plus an optional community override. */
+interface FormatResult {
+  movimientos: MovimientoRaw[];
+  comunidad?: string;
+}
+
+// Month-name stems (Catalan/Spanish, accent-stripped) -> month number (1-12).
+const MONTH_STEMS: { month: number; stems: string[] }[] = [
+  { month: 1, stems: ['gener', 'gen', 'enero', 'ene', 'jan'] },
+  { month: 2, stems: ['febrer', 'febr', 'feb', 'febrero'] },
+  { month: 3, stems: ['marc', 'mar', 'marzo'] },
+  { month: 4, stems: ['abril', 'abr'] },
+  { month: 5, stems: ['maig', 'mai', 'mayo', 'may'] },
+  { month: 6, stems: ['juny', 'jun', 'junio'] },
+  { month: 7, stems: ['juliol', 'jul', 'julio'] },
+  { month: 8, stems: ['agost', 'agosto', 'ago', 'ag', 'aug'] },
+  { month: 9, stems: ['setembre', 'sept', 'set', 'sep', 'septiembre'] },
+  { month: 10, stems: ['octubre', 'oct'] },
+  { month: 11, stems: ['novembre', 'noviembre', 'nov'] },
+  { month: 12, stems: ['desembre', 'diciembre', 'des', 'dez', 'dec', 'dic'] },
+];
+
+const BUDGET_SKIP_DESC = new Set([
+  'total',
+  'totals',
+  'totales',
+  'total anual',
+  'suma',
+  'sumes',
+  'sumas',
+  'saldo',
+]);
+
+/** Maps a header cell to a month number (1-12), or null if it is not a month. */
+function monthNameToNumber(header: string): number | null {
+  const h = normalizeKey(header).replace(/[.\s]+$/, '');
+  if (!h) return null;
+  for (const { month, stems } of MONTH_STEMS) {
+    for (const stem of stems) {
+      // Exact match, or a close abbreviation prefix. The length guard prevents
+      // long non-month words (e.g. "setmana") from matching a short stem ("set").
+      if (h === stem || (h.startsWith(stem) && h.length <= stem.length + 2)) {
+        return month;
+      }
+    }
+  }
+  return null;
+}
+
+/** Finds the month columns in a header row: [{ col, month }] (distinct months). */
+function detectMonthColumns(row: unknown[]): { col: number; month: number }[] {
+  const out: { col: number; month: number }[] = [];
+  const seen = new Set<number>();
+  row.forEach((cell, idx) => {
+    const month = monthNameToNumber(String(cell ?? ''));
+    if (month && !seen.has(month)) {
+      seen.add(month);
+      out.push({ col: idx, month });
+    }
+  });
+  return out;
+}
+
+/** Extracts the fiscal-year start (minimum year) from row 0 and the filename. */
+function extractStartYear(rows: unknown[][], filename: string): number {
+  const header = (rows[0] ?? []).map((c) => String(c ?? '')).join(' ');
+  const text = `${header} ${filename}`;
+  const years: number[] = [];
+  const re = /(19|20)\d{2}/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) years.push(Number(m[0]));
+  if (years.length > 0) return Math.min(...years);
+  return new Date().getFullYear();
+}
+
+/** Assigns a year to each month column, rolling over when the month wraps past December. */
+function assignYears(months: number[], startYear: number): number[] {
+  const years: number[] = [];
+  let year = startYear;
+  for (let i = 0; i < months.length; i++) {
+    if (i > 0 && months[i] < months[i - 1]) year++;
+    years.push(year);
+  }
+  return years;
+}
+
+/** Picks the description cell for a budget row (last non-numeric text before the months). */
+function pickDescripcion(row: unknown[], firstMonthCol: number): string {
+  for (let c = firstMonthCol - 1; c >= 0; c--) {
+    const v = row[c];
+    if (v == null || String(v).trim() === '') continue;
+    if (typeof v === 'number') continue; // numeric category code
+    const s = cleanDescripcion(v);
+    if (s && !/^\d+([.,]\d+)?$/.test(s)) return s;
+  }
+  return '';
+}
+
+/** Community name from row 0 (column 1, falling back to the first text cell). */
+function extractBudgetComunidad(rows: unknown[][]): string {
+  const row0 = rows[0] ?? [];
+  const preferred = cleanDescripcion(row0[1]);
+  if (preferred && !/^\d+$/.test(preferred)) return preferred;
+  for (const cell of row0) {
+    const s = cleanDescripcion(cell);
+    if (s && !/^\d+$/.test(s)) return s;
+  }
+  return '';
+}
+
+/**
+ * Detects and parses the annual-budget-by-category format:
+ *   row 0: community + period; row 1: month headers; rows 2+: one category per
+ *   row with a monthly amount per column. Emits one (negative, = expense)
+ *   movement per month that has an amount, dated to the first day of that month.
+ * Returns null if the table is not in budget format.
+ */
+function tryParseBudget(rows: unknown[][], filename: string): FormatResult | null {
+  let headerIdx = -1;
+  let monthCols: { col: number; month: number }[] = [];
+
+  const limit = Math.min(rows.length, 10);
+  for (let i = 0; i < limit; i++) {
+    const cols = detectMonthColumns(rows[i]);
+    if (cols.length >= 6) {
+      headerIdx = i;
+      monthCols = cols;
+      break;
+    }
+  }
+  if (headerIdx === -1) return null;
+
+  const years = assignYears(
+    monthCols.map((c) => c.month),
+    extractStartYear(rows, filename),
+  );
+  const firstMonthCol = monthCols[0].col;
+  const comunidad = extractBudgetComunidad(rows);
+
+  const movimientos: MovimientoRaw[] = [];
+  for (let r = headerIdx + 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row) continue;
+
+    const descripcion = pickDescripcion(row, firstMonthCol);
+    if (!descripcion) continue;
+    if (BUDGET_SKIP_DESC.has(normalizeKey(descripcion))) continue;
+
+    for (let k = 0; k < monthCols.length; k++) {
+      const value = parseSpanishAmount(row[monthCols[k].col]);
+      if (Number.isNaN(value) || value === 0) continue;
+      const fecha = `01/${pad2(monthCols[k].month)}/${years[k]}`;
+      movimientos.push({ fecha, descripcion, importe: -Math.abs(value) });
+    }
+  }
+
+  return { movimientos, comunidad: comunidad || undefined };
+}
+
+/**
+ * Normalizes a raw table into movements, auto-detecting the format:
+ *   - month columns present  -> annual budget (presupuesto)
+ *   - fecha/importe columns   -> standard bank statement
+ */
+function normalizeTable(rows: unknown[][], filename: string): FormatResult {
+  const budget = tryParseBudget(rows, filename);
+  if (budget) return budget;
+
+  const header = findHeader(rows);
+  if (!header) return { movimientos: [] };
+  return {
+    movimientos: rowsToMovimientos(rows.slice(header.index + 1), header.columns),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Per-format parsers
 // ---------------------------------------------------------------------------
 
-function parseXlsx(buf: Buffer): MovimientoRaw[] {
+function parseXlsx(buf: Buffer, filename: string): FormatResult {
   const wb = XLSX.read(buf, { type: 'buffer', cellDates: true });
   // Always use the first sheet (index 0), per spec.
   const firstSheetName = wb.SheetNames[0];
-  if (!firstSheetName) return [];
+  if (!firstSheetName) return { movimientos: [] };
 
   const ws = wb.Sheets[firstSheetName];
   const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, {
@@ -235,10 +414,7 @@ function parseXlsx(buf: Buffer): MovimientoRaw[] {
     blankrows: false,
   });
 
-  const header = findHeader(rows);
-  if (!header) return [];
-
-  return rowsToMovimientos(rows.slice(header.index + 1), header.columns);
+  return normalizeTable(rows, filename);
 }
 
 /** Detects the delimiter (',' or ';') from the header/first line. */
@@ -298,15 +474,11 @@ function parseCsvText(text: string, delimiter: string): string[][] {
   return rows.filter((r) => r.some((c) => c.trim() !== ''));
 }
 
-function parseCsv(buf: Buffer): MovimientoRaw[] {
+function parseCsv(buf: Buffer, filename: string): FormatResult {
   const text = decodeBuffer(buf);
   const delimiter = detectDelimiter(text);
   const rows = parseCsvText(text, delimiter);
-
-  const header = findHeader(rows);
-  if (!header) return [];
-
-  return rowsToMovimientos(rows.slice(header.index + 1), header.columns);
+  return normalizeTable(rows, filename);
 }
 
 const PDF_DATE_RE = /(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/;
@@ -352,6 +524,17 @@ export function comunidadFromFilename(filename: string): string {
   return first || 'SinComunidad';
 }
 
+/** Sanitizes a community name for use as a Google Sheets tab title. */
+export function sanitizeComunidad(name: string): string {
+  const cleaned = name
+    .replace(/[:\\/?*\[\]]/g, ' ') // characters not allowed in Sheets tab titles
+    .replace(/\s+/g, ' ')
+    .replace(/^'+|'+$/g, '')
+    .trim()
+    .slice(0, 90);
+  return cleaned || 'SinComunidad';
+}
+
 function extensionOf(filename: string): string {
   const m = filename.toLowerCase().match(/\.([a-z0-9]+)$/);
   return m ? m[1] : '';
@@ -359,30 +542,31 @@ function extensionOf(filename: string): string {
 
 /**
  * Parses a file buffer into a normalized list of movements plus the derived
- * community name. Supports XLS/XLSX, CSV and PDF.
+ * community name. Supports XLS/XLSX, CSV and PDF, auto-detecting the standard
+ * bank-statement layout vs the annual-budget-by-category layout.
+ *
+ * The community comes from inside the file for budgets (row 0, column 1) and
+ * falls back to the filename otherwise.
  */
 export async function parseFile(buf: Buffer, filename: string): Promise<ParseResult> {
   const ext = extensionOf(filename);
-  let movimientos: MovimientoRaw[] = [];
+  let result: FormatResult = { movimientos: [] };
 
   if (ext === 'xls' || ext === 'xlsx' || ext === 'xlsm') {
-    movimientos = parseXlsx(buf);
+    result = parseXlsx(buf, filename);
   } else if (ext === 'csv' || ext === 'txt') {
-    movimientos = parseCsv(buf);
+    result = parseCsv(buf, filename);
   } else if (ext === 'pdf') {
-    movimientos = await parsePdf(buf);
+    result = { movimientos: await parsePdf(buf) };
   } else {
     // Unknown extension: try XLSX first (binary), then CSV (text).
     try {
-      movimientos = parseXlsx(buf);
+      result = parseXlsx(buf, filename);
     } catch {
-      movimientos = parseCsv(buf);
+      result = parseCsv(buf, filename);
     }
   }
 
-  return {
-    comunidad: comunidadFromFilename(filename),
-    archivo: filename,
-    movimientos,
-  };
+  const comunidad = sanitizeComunidad(result.comunidad || comunidadFromFilename(filename));
+  return { comunidad, archivo: filename, movimientos: result.movimientos };
 }

@@ -24,6 +24,7 @@ export default function DropZone({
   const [dragging, setDragging] = useState(false);
   const [message, setMessage] = useState('');
   const [fileName, setFileName] = useState('');
+  const [force, setForce] = useState(false);
 
   function hasValidExtension(name: string): boolean {
     return ACCEPTED.some((ext) => name.toLowerCase().endsWith(ext));
@@ -49,6 +50,7 @@ export default function DropZone({
     try {
       const formData = new FormData();
       formData.append('file', file);
+      if (force) formData.append('force', 'true');
 
       const res = await fetch('/api/process', { method: 'POST', body: formData });
       clearInterval(timer);
@@ -147,6 +149,16 @@ export default function DropZone({
           }}
         />
       </div>
+
+      <label className="mt-3 flex w-fit cursor-pointer select-none items-center gap-2 text-sm text-neutral-400">
+        <input
+          type="checkbox"
+          checked={force}
+          onChange={(e) => setForce(e.target.checked)}
+          className="h-4 w-4 rounded border-border bg-surface-2 accent-[#f97316]"
+        />
+        Forzar reproceso (ignorar detección de duplicados)
+      </label>
 
       {(status === 'processing' || status === 'done' || status === 'error') && (
         <div className="mt-4 rounded-xl border border-border bg-surface p-4">

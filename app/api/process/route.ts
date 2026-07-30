@@ -24,8 +24,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const force = formData.get('force') === 'true';
     const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await processFileBuffer(buffer, file.name);
+    const result = await processFileBuffer(buffer, file.name, { force });
 
     return NextResponse.json(result);
   } catch (err) {

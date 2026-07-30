@@ -25,11 +25,15 @@ import type { ProcessResult } from './types';
 export async function processFileBuffer(
   buffer: Buffer,
   filename: string,
+  options: { force?: boolean } = {},
 ): Promise<ProcessResult> {
   const hash = crypto.createHash('sha256').update(buffer).digest('hex');
   const sheetUrl = getSheetUrl();
 
-  if (await isDuplicate(hash)) {
+  // Duplicate detection can be bypassed with `force` (e.g. re-testing the same
+  // file from the dashboard).
+  const alreadyProcessed = await isDuplicate(hash);
+  if (alreadyProcessed && !options.force) {
     return {
       comunidad: '',
       archivo: filename,
@@ -66,7 +70,11 @@ export async function processFileBuffer(
   // OK rows -> community tab; flagged rows -> "Pendiente Revision" tab.
   await writeComunidadRows(comunidad, ok, filename, fechaProceso);
   await writePendienteRows(comunidad, pendientes, filename, fechaProceso);
-  await recordHash(hash, filename, fechaProceso);
+  // Only record the hash the first time, so forced reprocessing doesn't add
+  // duplicate rows to the processed-files registry.
+  if (!alreadyProcessed) {
+    await recordHash(hash, filename, fechaProceso);
+  }
 
   let emailEnviado = false;
   if (pendientes.length > 0) {

@@ -74,7 +74,10 @@ openssl rand -base64 32
 5. **Email** (`lib/email.ts`) — si hay pendientes, avisa a `SUPERVISOR_EMAIL`
    (requiere SMTP configurado; si no, se omite sin romper el flujo).
 6. **Sin duplicados** — se guarda el hash SHA-256 de cada archivo en la pestaña
-   `_Procesados`; los archivos ya procesados se ignoran.
+   `_Procesados`; los archivos ya procesados se ignoran. Para reprocesar el mismo
+   archivo (p. ej. al hacer pruebas), marca **"Forzar reproceso"** en el panel
+   antes de subirlo. Para vaciar por completo el registro, elimina la pestaña
+   `_Procesados` del Google Sheet (se recrea sola en el siguiente procesado).
 
 ### Convención de nombres
 

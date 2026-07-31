@@ -4,6 +4,7 @@ import { classifyMovimientos } from './claude';
 import {
   writeComunidadRows,
   writePendienteRows,
+  writeExtractosRows,
   isDuplicate,
   recordHash,
   getSheetUrl,
@@ -67,9 +68,11 @@ export async function processFileBuffer(
   const ok = clasificados.filter((m) => !m.revisar);
   const pendientes = clasificados.filter((m) => m.revisar);
 
-  // OK rows -> community tab; flagged rows -> "Pendiente Revision" tab.
+  // OK rows -> community tab; flagged rows -> "Pendiente Revision" tab;
+  // every movement -> "Extractos" master ledger.
   await writeComunidadRows(comunidad, ok, filename, fechaProceso);
   await writePendienteRows(comunidad, pendientes, filename, fechaProceso);
+  await writeExtractosRows(comunidad, clasificados, filename, fechaProceso);
   // Only record the hash the first time, so forced reprocessing doesn't add
   // duplicate rows to the processed-files registry.
   if (!alreadyProcessed) {

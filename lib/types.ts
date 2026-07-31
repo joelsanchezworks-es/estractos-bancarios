@@ -41,6 +41,7 @@ export interface StatsResponse {
   comunidadesSemana: number;
   pendientesRevision: number;
   ultimoProcesado: string | null; // ISO timestamp
+  ultimoArchivo: string | null; // filename of the last processed extract
   comunidades: ComunidadResumen[];
   pendientes: PendienteResumen[];
   gastosPorCategoria: { categoria: string; total: number }[];

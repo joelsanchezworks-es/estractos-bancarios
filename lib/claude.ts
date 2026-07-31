@@ -10,30 +10,29 @@ const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
 const MAX_BATCH_SIZE = 50; // movements per Claude request
 const MAX_CHARS = 6000; // approx char budget per Claude request
 
-const SYSTEM_PROMPT = `Eres un asistente contable especializado en comunidades de propietarios. Clasifica cada movimiento en estas categorías exactas: Luz, Agua, Seguro, Reparacion Electrica, Fontaneria, Jardineria, Limpieza, Cuotas, Otros.
+const SYSTEM_PROMPT = `Eres un asistente contable especializado en comunidades de propietarios españolas y catalanas.
+Clasifica cada movimiento en UNA de estas categorías exactas: Luz, Agua, Seguro, Reparacion Electrica, Fontaneria, Jardineria, Limpieza, Cuotas, Otros.
 
-Las descripciones pueden venir en catalán, castellano o una mezcla de ambos. Clasifica siempre por el concepto del gasto, aunque el idioma sea distinto al de la categoría. Ejemplos de mapeo (concepto → categoría):
-- Electra / Electricitat / Llum → Luz
-- Aigua / Water → Agua
-- Assegurança / Seguro → Seguro
-- Manteniment elèctric / Reparació elèctrica → Reparacion Electrica
-- Fontaneria / Fontanera / Desatascos / Sifons → Fontaneria
-- Neteja / Limpieza → Limpieza
-- Jardí / Jardineria → Jardineria
-- Ascensor / Mant. Ascensor → Otros
-- Honoraris / Administració / Admin → Cuotas
-- Despeses banc / Banco → Otros
-- CAE / PRL / Protecció Dades → Otros
-Estos son solo ejemplos orientativos; usa el mismo criterio para conceptos equivalentes en cualquiera de los dos idiomas.
+MAPEO DE TÉRMINOS:
+- Electra, Electricitat, Llum, Electric → Luz
+- Aigua, Agua, Servaigua → Agua
+- Assegurança, Seguro, Segur → Seguro
+- Manteniment elèctric, Reparació, Elèctric BT → Reparacion Electrica
+- Fontaneria, Desatascos, Sifons → Fontaneria
+- Neteja, Limpieza → Limpieza
+- Jardí, Jardineria → Jardineria
+- Honoraris, Administració, Admin, IVA Admin → Cuotas
+- Ascensor, Mant. Ascensor, Extintors → Otros
+- Despeses banc, Banc, CAE, PRL → Otros
+- Cert. Digital, RMR, Protecció Dades → Otros
 
-Devuelve SOLO un array JSON sin texto extra, sin markdown, sin explicaciones.
-Cada elemento:
-- fecha (DD/MM/YYYY)
-- descripcion (string limpio)
-- importe (number, negativo=gasto)
-- categoria (de la lista exacta)
-- confianza (alta/media/baja)
-- revisar (boolean)`;
+REGLAS IMPORTANTES:
+- Descripciones pueden venir en catalán, castellano o mezcla de ambos
+- Clasifica por CONCEPTO no por idioma
+- Solo revisar:true si es genuinamente ambiguo
+- Si el concepto es claro: confianza alta, revisar: false
+- Devuelve SOLO array JSON sin texto extra
+- Cada elemento: fecha (DD/MM/YYYY), descripcion, importe (negativo=gasto), categoria, confianza (alta/media/baja), revisar (boolean)`;
 
 let client: Anthropic | null = null;
 function getClient(): Anthropic {

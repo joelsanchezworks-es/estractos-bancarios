@@ -2,6 +2,7 @@ import { google, type sheets_v4 } from 'googleapis';
 import type { MovimientoClasificado } from './types';
 
 export const PENDIENTE_SHEET = 'Pendiente Revision';
+export const EXTRACTOS_SHEET = 'Extractos';
 const PROCESADOS_SHEET = '_Procesados';
 
 export const COMUNIDAD_HEADERS = [
@@ -29,8 +30,8 @@ export const PENDIENTE_HEADERS = [
 
 const PROCESADOS_HEADERS = ['hash', 'archivo', 'fecha_proceso'];
 
-// System tabs excluded from community aggregation.
-export const SYSTEM_SHEETS = new Set([PENDIENTE_SHEET, PROCESADOS_SHEET]);
+// System tabs excluded from per-community aggregation.
+export const SYSTEM_SHEETS = new Set([PENDIENTE_SHEET, EXTRACTOS_SHEET, PROCESADOS_SHEET]);
 
 function getSpreadsheetId(): string {
   const id = process.env.GOOGLE_SHEETS_ID;
@@ -139,6 +140,31 @@ export async function writeComunidadRows(
   await appendRows(comunidad, rows);
 }
 
+/**
+ * Appends every classified movement (regardless of category or review flag) to
+ * the global "Extractos" summary tab — a master ledger of all communities.
+ */
+export async function writeExtractosRows(
+  comunidad: string,
+  movimientos: MovimientoClasificado[],
+  archivo: string,
+  fechaProceso: string,
+): Promise<void> {
+  if (movimientos.length === 0) return;
+  await ensureSheet(EXTRACTOS_SHEET, COMUNIDAD_HEADERS);
+  const rows = movimientos.map((m) => [
+    m.fecha,
+    m.descripcion,
+    m.importe,
+    m.categoria,
+    m.confianza,
+    comunidad,
+    archivo,
+    fechaProceso,
+  ]);
+  await appendRows(EXTRACTOS_SHEET, rows);
+}
+
 /** Appends flagged movements to the "Pendiente Revision" tab. */
 export async function writePendienteRows(
   comunidad: string,
@@ -189,6 +215,36 @@ export async function recordHash(
 ): Promise<void> {
   await ensureSheet(PROCESADOS_SHEET, PROCESADOS_HEADERS);
   await appendRows(PROCESADOS_SHEET, [[hash, archivo, fechaProceso]]);
+}
+
+/**
+ * Returns the most recently processed file (name + ISO timestamp) from the
+ * `_Procesados` registry, or null. This is the authoritative "last extract"
+ * source: it is populated for every file, even when all movements ended up in
+ * the review tab.
+ */
+export async function getUltimoProcesado(): Promise<{
+  archivo: string;
+  fecha: string;
+} | null> {
+  try {
+    const titles = await getSheetTitles();
+    if (!titles.includes(PROCESADOS_SHEET)) return null;
+
+    const rows = await getValues(`${quoteRange(PROCESADOS_SHEET)}!A2:C`);
+    let latest: { archivo: string; fecha: string } | null = null;
+    for (const r of rows) {
+      const fecha = r[2];
+      if (!fecha) continue;
+      if (!latest || new Date(fecha).getTime() > new Date(latest.fecha).getTime()) {
+        latest = { archivo: r[1] || '', fecha };
+      }
+    }
+    return latest;
+  } catch (err) {
+    console.error('[sheets] Error leyendo último procesado:', err);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

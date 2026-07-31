@@ -70,7 +70,9 @@ openssl rand -base64 32
    errores no rompen el flujo: los movimientos afectados se marcan para revisión.
 4. **Escritura en Sheets** (`lib/sheets.ts`) — crea la pestaña de la comunidad si
    no existe, añade cabeceras si está vacía. Movimientos correctos → pestaña de
-   la comunidad; movimientos con `revisar: true` → pestaña `Pendiente Revision`.
+   la comunidad; movimientos con `revisar: true` → pestaña `Pendiente Revision`;
+   **todos** los movimientos → pestaña `Extractos` (libro maestro con todas las
+   comunidades, usado también para los contadores del dashboard).
 5. **Email** (`lib/email.ts`) — si hay pendientes, avisa a `SUPERVISOR_EMAIL`
    (requiere SMTP configurado; si no, se omite sin romper el flujo).
 6. **Sin duplicados** — se guarda el hash SHA-256 de cada archivo en la pestaña

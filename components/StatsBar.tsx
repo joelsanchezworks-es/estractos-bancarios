@@ -19,11 +19,12 @@ function timeAgo(iso: string | null): string {
 interface CardProps {
   label: string;
   value: string;
+  sub?: string;
   danger?: boolean;
   loading?: boolean;
 }
 
-function Card({ label, value, danger, loading }: CardProps) {
+function Card({ label, value, sub, danger, loading }: CardProps) {
   return (
     <div className="rounded-2xl border border-border bg-surface p-5">
       <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">{label}</p>
@@ -34,6 +35,11 @@ function Card({ label, value, danger, loading }: CardProps) {
       >
         {loading ? '—' : value}
       </p>
+      {!loading && sub && (
+        <p className="mt-1 truncate text-xs text-neutral-500" title={sub}>
+          {sub}
+        </p>
+      )}
     </div>
   );
 }
@@ -68,6 +74,7 @@ export default function StatsBar({
       <Card
         label="Último extracto procesado"
         value={timeAgo(stats?.ultimoProcesado ?? null)}
+        sub={stats?.ultimoArchivo ?? undefined}
         loading={loading}
       />
     </div>

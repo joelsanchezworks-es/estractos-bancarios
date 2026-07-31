@@ -5,6 +5,7 @@ import {
   getSheetTitles,
   batchGetValues,
   getValues,
+  getUltimoProcesado,
   quoteSheetRange,
   getSheetUrl,
   SYSTEM_SHEETS,
@@ -19,19 +20,16 @@ import type {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/** Parses a DD/MM/YYYY string into a Date (local), or null. */
-function parseDMY(value: string): Date | null {
-  const m = String(value).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-  if (!m) return null;
-  const [, d, mo, y] = m;
-  const year = y.length === 2 ? 2000 + Number(y) : Number(y);
-  const date = new Date(year, Number(mo) - 1, Number(d));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
 function parseNumber(value: unknown): number {
   const n = parseFloat(String(value ?? '').replace(',', '.'));
   return Number.isNaN(n) ? 0 : n;
+}
+
+/** Parses an ISO fecha_proceso timestamp into a Date, or null. */
+function parseProceso(value: unknown): Date | null {
+  if (!value) return null;
+  const d = new Date(String(value));
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 const EMPTY_STATS: StatsResponse = {
@@ -39,11 +37,16 @@ const EMPTY_STATS: StatsResponse = {
   comunidadesSemana: 0,
   pendientesRevision: 0,
   ultimoProcesado: null,
+  ultimoArchivo: null,
   comunidades: [],
   pendientes: [],
   gastosPorCategoria: [],
   sheetUrl: '',
 };
+
+// Movement-row column indices (shared by community and pending tabs — the first
+// 8 columns are identical in both layouts).
+const COL = { importe: 2, categoria: 3, comunidad: 5, fechaProceso: 7 } as const;
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -69,69 +72,74 @@ export async function GET() {
       (t) => !SYSTEM_SHEETS.has(t) && !t.startsWith('_'),
     );
 
-    // Pending review rows (single tab).
+    // Read all community tabs + the pending tab in one batch.
+    const comunidadRanges = comunidadTitles.map((t) => quoteSheetRange(t, 'A2:H'));
+    const batches = await batchGetValues(comunidadRanges);
+
     const pendientesRows = titles.includes(PENDIENTE_SHEET)
       ? await getValues(quoteSheetRange(PENDIENTE_SHEET, 'A2:I'))
       : [];
 
+    // Last processed file (name + time) from the authoritative registry.
+    const ultimo = await getUltimoProcesado();
+
+    // --- Pending review list ---
     const pendientesComunidades = new Set<string>();
     const pendientes: PendienteResumen[] = pendientesRows
       .filter((r) => r.length > 0 && r[0])
       .map((r) => {
-        const comunidad = r[5] ?? '';
+        const comunidad = r[COL.comunidad] ?? '';
         if (comunidad) pendientesComunidades.add(comunidad);
         return {
           fecha: r[0] ?? '',
           descripcion: r[1] ?? '',
-          importe: parseNumber(r[2]),
-          categoriaSugerida: r[3] ?? '',
+          importe: parseNumber(r[COL.importe]),
+          categoriaSugerida: r[COL.categoria] ?? '',
           comunidad,
         };
       });
 
-    // All community tabs in one batch call.
-    const ranges = comunidadTitles.map((t) => quoteSheetRange(t, 'A2:H'));
-    const batches = await batchGetValues(ranges);
-
+    // --- Aggregate counters over ALL movements (community + pending) by the
+    // processing date, so they reflect activity regardless of whether a
+    // movement was auto-classified or sent to review. ---
     let totalMovimientosMes = 0;
-    let ultimoProcesado: Date | null = null;
     const comunidadesSemana = new Set<string>();
     const gastos = new Map<string, number>();
-    const comunidadResumen = new Map<string, number>(); // community -> movements this week
+    const comunidadResumen = new Map<string, number>();
 
+    const communityRows: { comunidad: string; row: string[] }[] = [];
     batches.forEach((batch, idx) => {
       const comunidad = comunidadTitles[idx] ?? '';
-
       for (const row of batch.values) {
-        if (!row || row.length === 0 || !row[0]) continue;
-
-        const importe = parseNumber(row[2]);
-        const categoria = row[3] ?? 'Otros';
-        const fechaMov = parseDMY(row[0]);
-        const fechaProcesoRaw = row[7];
-        const fechaProceso = fechaProcesoRaw ? new Date(fechaProcesoRaw) : null;
-
-        // Movements in the current month.
-        if (fechaMov && fechaMov >= monthStart) {
-          totalMovimientosMes += 1;
-          if (importe < 0) {
-            gastos.set(categoria, (gastos.get(categoria) ?? 0) + Math.abs(importe));
-          }
-        }
-
-        // Processing activity in the last 7 days.
-        if (fechaProceso && !Number.isNaN(fechaProceso.getTime()) && fechaProceso >= weekAgo) {
-          comunidadesSemana.add(comunidad);
-          comunidadResumen.set(comunidad, (comunidadResumen.get(comunidad) ?? 0) + 1);
-        }
-
-        if (fechaProceso && !Number.isNaN(fechaProceso.getTime())) {
-          if (!ultimoProcesado || fechaProceso > ultimoProcesado) {
-            ultimoProcesado = fechaProceso;
-          }
-        }
+        if (row && row.length > 0 && row[0]) communityRows.push({ comunidad, row });
       }
     });
+    for (const r of pendientesRows) {
+      if (r && r.length > 0 && r[0]) {
+        communityRows.push({ comunidad: r[COL.comunidad] ?? '', row: r });
+      }
+    }
+
+    for (const { comunidad, row } of communityRows) {
+      const fechaProceso = parseProceso(row[COL.fechaProceso]);
+      if (!fechaProceso) continue;
+
+      // Movements processed this calendar month.
+      if (fechaProceso >= monthStart) {
+        totalMovimientosMes += 1;
+        const importe = parseNumber(row[COL.importe]);
+        if (importe < 0) {
+          const categoria = row[COL.categoria] || 'Otros';
+          gastos.set(categoria, (gastos.get(categoria) ?? 0) + Math.abs(importe));
+        }
+      }
+
+      // Communities with activity in the last 7 days.
+      if (fechaProceso >= weekAgo && comunidad) {
+        comunidadesSemana.add(comunidad);
+        comunidadResumen.set(comunidad, (comunidadResumen.get(comunidad) ?? 0) + 1);
+      }
+    }
 
     const comunidades: ComunidadResumen[] = Array.from(comunidadResumen.entries())
       .map(([nombre, movimientos]) => ({
@@ -149,9 +157,8 @@ export async function GET() {
       totalMovimientosMes,
       comunidadesSemana: comunidadesSemana.size,
       pendientesRevision: pendientes.length,
-      ultimoProcesado: ultimoProcesado
-        ? (ultimoProcesado as Date).toISOString()
-        : null,
+      ultimoProcesado: ultimo?.fecha ?? null,
+      ultimoArchivo: ultimo?.archivo ?? null,
       comunidades,
       pendientes,
       gastosPorCategoria,

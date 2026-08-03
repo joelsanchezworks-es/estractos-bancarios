@@ -19,9 +19,9 @@ export async function POST(req: NextRequest) {
   if (!session) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
 
   try {
-    if (!process.env.GOOGLE_SHEETS_ID) {
+    if (!process.env.GOOGLE_SHEETS_ID_CLIENTE && !process.env.GOOGLE_SHEETS_ID) {
       return NextResponse.json(
-        { error: 'GOOGLE_SHEETS_ID no está configurado en el servidor.' },
+        { error: 'GOOGLE_SHEETS_ID_CLIENTE no está configurado en el servidor.' },
         { status: 500 },
       );
     }

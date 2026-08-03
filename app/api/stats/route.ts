@@ -3,11 +3,10 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import {
   getSheetTitles,
-  getValues,
+  getPendientesRows,
   getUltimoProcesado,
   getSheetUrl,
   SYSTEM_SHEETS,
-  PENDIENTE_SHEET,
 } from '@/lib/sheets';
 import type { StatsResponse, ComunidadResumen, PendienteResumen } from '@/lib/types';
 
@@ -42,7 +41,8 @@ export async function GET() {
 
   const sheetUrl = getSheetUrl();
 
-  if (!process.env.GOOGLE_SHEETS_ID || !process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
+  const hasSheets = process.env.GOOGLE_SHEETS_ID_CLIENTE || process.env.GOOGLE_SHEETS_ID;
+  if (!hasSheets || !process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
     return NextResponse.json({ ...EMPTY_STATS, sheetUrl });
   }
 
@@ -52,10 +52,8 @@ export async function GET() {
       (t) => !SYSTEM_SHEETS.has(t) && !t.startsWith('_'),
     );
 
-    // Pending review rows: fecha | concepto | importe | comunidad | sugerencia
-    const pendientesRows = titles.includes(PENDIENTE_SHEET)
-      ? await getValues(`'${PENDIENTE_SHEET.replace(/'/g, "''")}'!A2:E`)
-      : [];
+    // Pending review rows (SYSTEM sheet): fecha | concepto | importe | comunidad | sugerencia
+    const pendientesRows = await getPendientesRows();
 
     const pendientesComunidades = new Set<string>();
     const pendientes: PendienteResumen[] = pendientesRows

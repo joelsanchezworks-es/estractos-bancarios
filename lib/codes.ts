@@ -9,6 +9,7 @@ export interface CodeDef {
 export const CODES: CodeDef[] = [
   { code: '010', descripcion: 'Electra' },
   { code: '011', descripcion: 'Manteniment elèctric BT' },
+  { code: '012', descripcion: 'Reparació elèctric' },
   { code: '020', descripcion: 'Aigua' },
   { code: '030', descripcion: 'Mant. Ascensor ASZENDE' },
   { code: '040', descripcion: 'Assegurança' },

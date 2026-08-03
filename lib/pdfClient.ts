@@ -10,7 +10,9 @@ const OCR_LANG = 'spa';
 const NATIVE_TEXT_MIN_CHARS = 50;
 // Target raster width (px) when rendering a page for OCR. Higher = more
 // accurate but slower.
-const OCR_TARGET_WIDTH = 1600;
+const OCR_TARGET_WIDTH = 2400;
+// Contrast multiplier applied before OCR (>1 sharpens text vs background).
+const OCR_CONTRAST = 1.5;
 
 export interface ExtractProgress {
   phase: 'text' | 'ocr';
@@ -105,10 +107,26 @@ async function extractNativeText(doc: any): Promise<string> {
   return pages.join('\n\n');
 }
 
-/** Renders a PDF page to a canvas for OCR. */
+/** Grayscales and boosts contrast in-place to make OCR more accurate. */
+function preprocessCanvas(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return;
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data;
+  const intercept = 128 * (1 - OCR_CONTRAST);
+  for (let i = 0; i < d.length; i += 4) {
+    const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    let v = OCR_CONTRAST * gray + intercept;
+    v = v < 0 ? 0 : v > 255 ? 255 : v;
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/** Renders a PDF page to a canvas for OCR (high-res, grayscale, high-contrast). */
 async function renderPageToCanvas(page: any): Promise<HTMLCanvasElement> {
   const base = page.getViewport({ scale: 1 });
-  const scale = Math.min(3, Math.max(1, OCR_TARGET_WIDTH / base.width));
+  const scale = Math.min(5, Math.max(1, OCR_TARGET_WIDTH / base.width));
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement('canvas');
   canvas.width = Math.ceil(viewport.width);
@@ -116,6 +134,7 @@ async function renderPageToCanvas(page: any): Promise<HTMLCanvasElement> {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('No se pudo crear el lienzo (canvas) para OCR.');
   await page.render({ canvasContext: ctx, viewport }).promise;
+  preprocessCanvas(canvas);
   return canvas;
 }
 
@@ -143,6 +162,9 @@ async function ocrDocument(
       }
     },
   });
+
+  // PSM 6 = assume a single uniform block of text (best for statement tables).
+  await worker.setParameters({ tessedit_pageseg_mode: tesseract.PSM.SINGLE_BLOCK });
 
   try {
     const texts: string[] = [];

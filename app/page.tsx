@@ -12,7 +12,7 @@ export default async function Home() {
   }
 
   const sheetUrl = `https://docs.google.com/spreadsheets/d/${
-    process.env.GOOGLE_SHEETS_ID ?? ''
+    process.env.GOOGLE_SHEETS_ID_CLIENTE ?? process.env.GOOGLE_SHEETS_ID ?? ''
   }/edit`;
 
   return <Dashboard userName={session.user?.name ?? 'Joel'} sheetUrl={sheetUrl} />;

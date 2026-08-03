@@ -12,6 +12,7 @@ import {
   getSheetUrl,
   cellA1,
   assertNativeSheet,
+  resolveComunidadTab,
 } from './sheets';
 import {
   normalizeCode,
@@ -99,6 +100,8 @@ async function prepareCore(
     return {
       hash,
       comunidad: '',
+      titular: '',
+      noMapeada: false,
       archivo: filename,
       duplicado: true,
       already,
@@ -119,7 +122,12 @@ async function prepareCore(
     throw new Error('No se detectaron movimientos en el PDF (¿es un extracto del Sabadell con capa de texto?).');
   }
 
-  const comunidad = sanitizeComunidad(extracto.titular || baseName(filename));
+  // Resolve the destination tab from the _Comunidades map (SYSTEM sheet).
+  const titular = extracto.titular || baseName(filename);
+  const fallbackTab = sanitizeComunidad(titular);
+  const { tab: comunidad, noMapeada } = await resolveComunidadTab(titular, fallbackTab);
+  t.log('mapping', { titular: titular.slice(0, 40), tab: comunidad, noMapeada });
+
   const gastos = extracto.movimientos
     .filter((m) => m.importe < 0)
     .map((m) => ({ fecha: m.fecha, concepto: m.concepto, importe: m.importe }));
@@ -130,6 +138,8 @@ async function prepareCore(
   return {
     hash,
     comunidad,
+    titular,
+    noMapeada,
     archivo: filename,
     duplicado: false,
     already,
@@ -194,12 +204,16 @@ export async function applyClassifiedGastos(input: {
   totalMovimientos: number;
   ignorados: number;
   gastos: ClassifiedGasto[];
+  titular?: string;
+  noMapeada?: boolean;
 }): Promise<SabProcessResult> {
   const t = createTimer('pipeline:apply');
   const sheetUrl = getSheetUrl();
 
   const base: SabProcessResult = {
     comunidad: input.comunidad,
+    titular: input.titular,
+    noMapeada: input.noMapeada,
     archivo: input.archivo,
     tabCreada: false,
     duplicado: false,
@@ -371,6 +385,8 @@ export async function processSabadellPdf(
     totalMovimientos: prepared.totalMovimientos,
     ignorados: prepared.ignorados,
     gastos,
+    titular: prepared.titular,
+    noMapeada: prepared.noMapeada,
   });
 }
 

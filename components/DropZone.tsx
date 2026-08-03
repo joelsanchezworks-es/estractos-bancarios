@@ -87,6 +87,9 @@ export default function DropZone({
   const [fileName, setFileName] = useState('');
   const [force, setForce] = useState(false);
   const [ocr, setOcr] = useState<{ page: number; total: number; pct: number } | null>(null);
+  const [warn, setWarn] = useState(false);
+  const [rawText, setRawText] = useState('');
+  const [showRaw, setShowRaw] = useState(false);
 
   function hasValidExtension(name: string): boolean {
     return ACCEPTED.some((ext) => name.toLowerCase().endsWith(ext));
@@ -104,6 +107,9 @@ export default function DropZone({
     setStage(0);
     setMessage('');
     setOcr(null);
+    setWarn(false);
+    setRawText('');
+    setShowRaw(false);
 
     try {
       // --- Phase 0 (browser): extract text (pdf.js), OCR if scanned ---
@@ -128,6 +134,7 @@ export default function DropZone({
       }
       setOcr(null);
       const text = extracted.text;
+      setRawText(text); // keep for the "Ver texto extraído" debug view
       if (!text.trim()) {
         throw new Error(
           extracted.ocr
@@ -185,6 +192,14 @@ export default function DropZone({
       if (result.error) {
         setStatus('error');
         setMessage(result.error);
+      } else if (result.noMapeada) {
+        setStatus('done');
+        setWarn(true);
+        setMessage(
+          `⚠️ Comunidad no mapeada: "${result.titular ?? ''}". Se han escrito los importes en la pestaña ` +
+            `"${result.comunidad}" (${result.celdasActualizadas} celda(s)). Ve al Sheet de sistema → pestaña ` +
+            `"_Comunidades" y añade el nombre de la pestaña correspondiente en la columna B.`,
+        );
       } else {
         setStatus('done');
         setMessage(
@@ -311,11 +326,35 @@ export default function DropZone({
           {message && (
             <p
               className={`mt-3 text-sm ${
-                status === 'error' ? 'text-red-400' : 'text-neutral-300'
+                status === 'error'
+                  ? 'text-red-400'
+                  : warn
+                    ? 'text-amber-400'
+                    : 'text-neutral-300'
               }`}
             >
               {message}
             </p>
+          )}
+
+          {rawText && (status === 'done' || status === 'error') && (
+            <div className="mt-3 border-t border-border/60 pt-3">
+              <button
+                type="button"
+                onClick={() => setShowRaw((s) => !s)}
+                className="text-xs font-medium text-neutral-400 underline decoration-dotted underline-offset-2 hover:text-white"
+              >
+                {showRaw ? 'Ocultar texto extraído' : 'Ver texto extraído (debug OCR)'}
+              </button>
+              {showRaw && (
+                <textarea
+                  readOnly
+                  value={rawText}
+                  className="mt-2 h-56 w-full resize-y rounded-lg border border-border bg-surface-2 p-2 font-mono text-xs leading-relaxed text-neutral-300"
+                  spellCheck={false}
+                />
+              )}
+            </div>
           )}
         </div>
       )}

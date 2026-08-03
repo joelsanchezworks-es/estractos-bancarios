@@ -109,7 +109,9 @@ export interface ClassifiedGasto extends PreparedGasto {
 /** Result of phase 1 (parse the PDF + dedup check). */
 export interface PreparedExtracto {
   hash: string;
-  comunidad: string;
+  comunidad: string; // resolved CLIENT-sheet tab name
+  titular: string; // raw titular from the statement
+  noMapeada: boolean; // titular not found in _Comunidades (pending mapping)
   archivo: string;
   duplicado: boolean;
   already: boolean; // hash already recorded (governs whether to re-record)
@@ -121,7 +123,9 @@ export interface PreparedExtracto {
 
 /** Result of processing a Sabadell PDF against the template Sheet. */
 export interface SabProcessResult {
-  comunidad: string;
+  comunidad: string; // CLIENT-sheet tab used
+  titular?: string; // raw titular from the statement
+  noMapeada?: boolean; // titular not mapped in _Comunidades (pending)
   archivo: string;
   tabCreada: boolean;
   duplicado: boolean;

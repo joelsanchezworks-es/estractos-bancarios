@@ -114,7 +114,10 @@ Para no superar los límites del plan hobby de Vercel (4,5 MB por petición y 10
 por función), el PDF se procesa así:
 
 1. **Navegador** — el texto del PDF se extrae en el cliente con `pdf.js`; al
-   servidor solo se envía el texto plano (mucho más pequeño que el PDF).
+   servidor solo se envía el texto plano (mucho más pequeño que el PDF). Si el
+   PDF es **escaneado** (imagen, sin capa de texto), se aplica **OCR** en el
+   navegador con `Tesseract.js` (idioma español), con barra de progreso por
+   página. El resto del proceso es idéntico.
 2. **`/api/process/parse`** — valida el Sheet destino, detecta duplicados y
    separa gastos de ingresos.
 3. **`/api/process/classify`** — clasifica los conceptos en lotes cortos.

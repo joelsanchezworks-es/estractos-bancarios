@@ -9,11 +9,21 @@ const nextConfig = {
     // try to bundle its optional test-file access into the serverless output.
     serverComponentsExternalPackages: ['pdf-parse'],
   },
-  webpack: (config) => {
+  webpack: (config, { isServer }) => {
     // pdfjs-dist references the optional Node "canvas" package (only used for
     // server-side rendering, which we don't do). Stub it so webpack doesn't try
     // to resolve it in the browser bundle.
     config.resolve.alias = { ...config.resolve.alias, canvas: false };
+    if (!isServer) {
+      // tesseract.js / pdfjs reference Node built-ins in code paths that never
+      // run in the browser; stub them so the client bundle builds cleanly.
+      config.resolve.fallback = {
+        ...(config.resolve.fallback || {}),
+        fs: false,
+        path: false,
+        crypto: false,
+      };
+    }
     return config;
   },
 };

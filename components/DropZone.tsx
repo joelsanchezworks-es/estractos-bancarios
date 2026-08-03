@@ -2,7 +2,7 @@
 
 import { useRef, useState, type DragEvent } from 'react';
 import type { PreparedExtracto, SabProcessResult } from '@/lib/types';
-import { extractPdfText } from '@/lib/pdfClient';
+import { extractPdfText, type ExtractProgress } from '@/lib/pdfClient';
 
 const STAGES = [
   '📄 Extrayendo texto del PDF…',
@@ -86,6 +86,7 @@ export default function DropZone({
   const [message, setMessage] = useState('');
   const [fileName, setFileName] = useState('');
   const [force, setForce] = useState(false);
+  const [ocr, setOcr] = useState<{ page: number; total: number; pct: number } | null>(null);
 
   function hasValidExtension(name: string): boolean {
     return ACCEPTED.some((ext) => name.toLowerCase().endsWith(ext));
@@ -102,20 +103,37 @@ export default function DropZone({
     setStatus('processing');
     setStage(0);
     setMessage('');
+    setOcr(null);
 
     try {
-      // --- Phase 0 (browser): extract text with pdf.js ---
+      // --- Phase 0 (browser): extract text (pdf.js), OCR if scanned ---
       setStage(0);
-      let text: string;
+      setMessage('📄 Extrayendo texto del PDF…');
+      let extracted;
       try {
-        text = await extractPdfText(file);
+        extracted = await extractPdfText(file, (p: ExtractProgress) => {
+          if (p.phase === 'ocr') {
+            const total = Math.max(1, p.totalPages);
+            const pct = Math.round(((p.page - 1 + p.pageProgress) / total) * 100);
+            setOcr({ page: p.page, total: p.totalPages, pct });
+            setMessage(
+              `📸 PDF escaneado detectado, aplicando OCR (idioma español)… página ${p.page}/${p.totalPages}`,
+            );
+          }
+        });
       } catch (e) {
         throw new Error(
           'No se pudo leer el PDF en el navegador: ' + (e instanceof Error ? e.message : String(e)),
         );
       }
+      setOcr(null);
+      const text = extracted.text;
       if (!text.trim()) {
-        throw new Error('El PDF no contiene texto seleccionable (¿es un PDF escaneado?).');
+        throw new Error(
+          extracted.ocr
+            ? 'El OCR no reconoció texto en el PDF escaneado. Comprueba que el escaneo sea legible.'
+            : 'El PDF no contiene texto seleccionable (¿es un PDF escaneado?).',
+        );
       }
 
       // --- Phase 1: parse + validate destination (server) ---
@@ -178,6 +196,7 @@ export default function DropZone({
       onProcessed(result);
     } catch (err) {
       console.error('[DropZone]', err);
+      setOcr(null);
       setStatus('error');
       setMessage(err instanceof Error ? err.message : 'Error procesando el archivo.');
     }
@@ -191,7 +210,13 @@ export default function DropZone({
   }
 
   const progressPct =
-    status === 'done' ? 100 : status === 'processing' ? ((stage + 1) / (STAGES.length + 1)) * 100 : 0;
+    status === 'done'
+      ? 100
+      : ocr
+        ? ocr.pct
+        : status === 'processing'
+          ? ((stage + 1) / (STAGES.length + 1)) * 100
+          : 0;
 
   return (
     <div>
@@ -267,7 +292,11 @@ export default function DropZone({
             <>
               <div className="mb-2 flex items-center justify-between text-sm">
                 <span className="font-medium text-white">
-                  {status === 'done' ? '✅ Completado' : STAGES[stage]}
+                  {status === 'done'
+                    ? '✅ Completado'
+                    : ocr
+                      ? `📸 OCR en curso — página ${ocr.page}/${ocr.total}`
+                      : STAGES[stage]}
                 </span>
               </div>
               <div className="h-2 w-full overflow-hidden rounded-full bg-surface-2">

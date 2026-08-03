@@ -48,6 +48,42 @@ function getSheets(): sheets_v4.Sheets {
   return sheetsClient;
 }
 
+/** Collects the human-readable message(s) from a googleapis/Error object. */
+function errorText(err: unknown): string {
+  const parts: string[] = [];
+  if (err instanceof Error && err.message) parts.push(err.message);
+  const anyErr = err as {
+    response?: { data?: { error?: { message?: string } } };
+    errors?: { message?: string }[];
+  } | null;
+  try {
+    const apiMsg = anyErr?.response?.data?.error?.message;
+    if (apiMsg) parts.push(String(apiMsg));
+    if (Array.isArray(anyErr?.errors)) {
+      parts.push(anyErr!.errors.map((e) => e?.message ?? '').join(' '));
+    }
+  } catch {
+    // ignore
+  }
+  return parts.join(' | ');
+}
+
+/** True when the destination file is an uploaded Office (.xls/.xlsx) file. */
+function isOfficeFileError(err: unknown): boolean {
+  return /must not be an Office file|not supported for this document/i.test(errorText(err));
+}
+
+/** Maps low-level Sheets errors to a clear, user-facing message. */
+function friendlySheetsError(err: unknown): Error {
+  if (isOfficeFileError(err)) {
+    return new Error(
+      'El documento de destino debe ser un Google Sheet nativo, no un archivo Excel subido a Drive. ' +
+        'Ábrelo en Google Drive → Archivo → Guardar como Google Sheets.',
+    );
+  }
+  return err instanceof Error ? err : new Error(errorText(err) || 'Error de Google Sheets');
+}
+
 /** Retries a Google Sheets operation up to `retries` times with backoff. */
 async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
   let lastErr: unknown;
@@ -56,12 +92,23 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
       return await fn();
     } catch (err) {
       lastErr = err;
+      // An Office-file destination is a permanent misconfiguration; don't retry.
+      if (isOfficeFileError(err)) break;
       if (attempt < retries - 1) {
         await new Promise((r) => setTimeout(r, 200 * 2 ** attempt));
       }
     }
   }
-  throw lastErr;
+  throw friendlySheetsError(lastErr);
+}
+
+/**
+ * Verifies the destination is a native Google Sheet (not an uploaded .xls/.xlsx).
+ * Throws the friendly Office-file message if it isn't. Cheap metadata read used
+ * to fail fast before doing any expensive work.
+ */
+export async function assertNativeSheet(): Promise<void> {
+  await getSheetMeta();
 }
 
 /** Quotes a sheet title for use in an A1 range. */

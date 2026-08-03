@@ -86,6 +86,39 @@ export interface PendienteItem {
   sugerencia: string;
 }
 
+// ---------------------------------------------------------------------------
+// Phased processing contract (parse -> classify -> apply)
+//
+// The interactive upload is split into short HTTP calls so no single request
+// exceeds Vercel's 10s hobby-plan function limit. These types are the payloads
+// exchanged between the browser and the /api/process/* endpoints.
+// ---------------------------------------------------------------------------
+
+/** A single expense movement (negative amount) awaiting classification. */
+export interface PreparedGasto {
+  fecha: string; // F.Operativa, DD/MM/YYYY
+  concepto: string;
+  importe: number; // signed (negative = expense)
+}
+
+/** A gasto after its concept has been classified into a raw code. */
+export interface ClassifiedGasto extends PreparedGasto {
+  codigo: string; // "010" | "IGNORAR" | "" (empty => pending review)
+}
+
+/** Result of phase 1 (parse the PDF + dedup check). */
+export interface PreparedExtracto {
+  hash: string;
+  comunidad: string;
+  archivo: string;
+  duplicado: boolean;
+  already: boolean; // hash already recorded (governs whether to re-record)
+  totalMovimientos: number;
+  ignorados: number; // income (positive) movements, ignored
+  gastos: PreparedGasto[];
+  sheetUrl: string;
+}
+
 /** Result of processing a Sabadell PDF against the template Sheet. */
 export interface SabProcessResult {
   comunidad: string;

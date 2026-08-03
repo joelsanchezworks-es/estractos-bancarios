@@ -87,12 +87,21 @@ export function parseSabadellText(text: string): SabExtracto {
   };
 }
 
-/** Parses a Banco Sabadell PDF statement (native text) into header + movements. */
-export async function parseSabadellPdf(buf: Buffer): Promise<SabExtracto> {
+/**
+ * Extracts the raw text layer from a Sabadell PDF (server-side, via pdf-parse).
+ * Used by the Drive webhook. The interactive upload extracts text in the
+ * browser with pdf.js instead (keeps the request under Vercel's 4.5MB limit).
+ */
+export async function extractSabadellText(buf: Buffer): Promise<string> {
   // Import the internal lib path to avoid pdf-parse's debug test-file read.
   const pdf = (await import('pdf-parse/lib/pdf-parse.js')).default;
   const data = await pdf(buf);
-  return parseSabadellText(data.text ?? '');
+  return data.text ?? '';
+}
+
+/** Parses a Banco Sabadell PDF statement (native text) into header + movements. */
+export async function parseSabadellPdf(buf: Buffer): Promise<SabExtracto> {
+  return parseSabadellText(await extractSabadellText(buf));
 }
 
 /** Returns the calendar month (1-12) of a DD/MM/YYYY date, or null. */

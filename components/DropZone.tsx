@@ -1,18 +1,78 @@
 'use client';
 
 import { useRef, useState, type DragEvent } from 'react';
-import type { SabProcessResult } from '@/lib/types';
+import type { PreparedExtracto, SabProcessResult } from '@/lib/types';
+import { extractPdfText } from '@/lib/pdfClient';
 
 const STAGES = [
-  '📄 Leyendo PDF del Sabadell…',
-  '📋 Verificando pestaña en Sheet…',
+  '📄 Extrayendo texto del PDF…',
+  '📋 Validando y leyendo el extracto…',
   '🤖 Clasificando movimientos con Claude…',
-  '✍️ Actualizando celdas en Sheet…',
+  '✍️ Actualizando celdas en el Sheet…',
 ];
 
 const ACCEPTED = ['.pdf'];
+// Concepts per classify request: keep each server call within one Claude batch
+// so it stays well under Vercel's 10s function limit.
+const CHUNK_SIZE = 15;
 
 type Status = 'idle' | 'processing' | 'done' | 'error';
+
+/** POSTs JSON and returns the parsed response, surfacing the EXACT error. */
+async function postJson<T = unknown>(url: string, body: unknown): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    // Genuine network failure (offline / DNS / CORS).
+    throw new Error(`No se pudo conectar con el servidor (${url}).`);
+  }
+
+  const raw = await res.text();
+  let data: unknown = null;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    // Non-JSON body (e.g. a Vercel timeout/crash HTML page).
+  }
+
+  if (!res.ok) {
+    const errMsg =
+      data && typeof data === 'object' && 'error' in data
+        ? String((data as { error: unknown }).error)
+        : '';
+    if (errMsg) throw new Error(errMsg);
+    const snippet = raw.replace(/\s+/g, ' ').trim().slice(0, 300);
+    throw new Error(
+      `Error ${res.status}${res.statusText ? ' ' + res.statusText : ''}${snippet ? ` — ${snippet}` : ''}`,
+    );
+  }
+
+  if (data == null) throw new Error(`Respuesta no válida del servidor (${url}).`);
+  return data as T;
+}
+
+/** Builds a minimal result object for the duplicate short-circuit. */
+function duplicateResult(prepared: PreparedExtracto, filename: string): SabProcessResult {
+  return {
+    comunidad: prepared.comunidad ?? '',
+    archivo: prepared.archivo ?? filename,
+    tabCreada: false,
+    duplicado: true,
+    totalMovimientos: prepared.totalMovimientos ?? 0,
+    ignorados: prepared.ignorados ?? 0,
+    celdasActualizadas: 0,
+    updates: [],
+    pendientes: [],
+    totalesPorCategoria: [],
+    totalesPorMes: [],
+    sheetUrl: prepared.sheetUrl ?? '',
+  };
+}
 
 export default function DropZone({
   onProcessed,
@@ -43,33 +103,68 @@ export default function DropZone({
     setStage(0);
     setMessage('');
 
-    // Advance the visible stage while the request is in flight (best-effort UX).
-    const timer = setInterval(() => {
-      setStage((s) => (s < STAGES.length - 1 ? s + 1 : s));
-    }, 1200);
-
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      if (force) formData.append('force', 'true');
+      // --- Phase 0 (browser): extract text with pdf.js ---
+      setStage(0);
+      let text: string;
+      try {
+        text = await extractPdfText(file);
+      } catch (e) {
+        throw new Error(
+          'No se pudo leer el PDF en el navegador: ' + (e instanceof Error ? e.message : String(e)),
+        );
+      }
+      if (!text.trim()) {
+        throw new Error('El PDF no contiene texto seleccionable (¿es un PDF escaneado?).');
+      }
 
-      const res = await fetch('/api/process', { method: 'POST', body: formData });
-      clearInterval(timer);
+      // --- Phase 1: parse + validate destination (server) ---
+      setStage(1);
+      const prepared = await postJson<PreparedExtracto>('/api/process/parse', {
+        text,
+        filename: file.name,
+        force,
+      });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        setStatus('error');
-        setMessage(data?.error ?? 'Error procesando el archivo.');
+      if (prepared.duplicado) {
+        setStatus('done');
+        setMessage(
+          'Este PDF ya se había procesado (duplicado). Marca "Forzar reproceso" para repetirlo.',
+        );
+        onProcessed(duplicateResult(prepared, file.name));
         return;
       }
 
-      const result = data as SabProcessResult;
+      const gastos = prepared.gastos ?? [];
 
-      if (result.duplicado) {
-        setStatus('done');
-        setMessage('Este PDF ya se había procesado (duplicado). Marca "Forzar reproceso" para repetirlo.');
-      } else if (result.error) {
+      // --- Phase 2: classify concepts in small chunks ---
+      setStage(2);
+      const codigos: string[] = [];
+      for (let i = 0; i < gastos.length; i += CHUNK_SIZE) {
+        const chunk = gastos.slice(i, i + CHUNK_SIZE);
+        setMessage(`🤖 Clasificando ${Math.min(i + chunk.length, gastos.length)}/${gastos.length}…`);
+        const r = await postJson<{ codigos?: string[] }>('/api/process/classify', {
+          conceptos: chunk.map((g) => g.concepto),
+        });
+        const cs = Array.isArray(r.codigos) ? r.codigos : [];
+        for (let j = 0; j < chunk.length; j++) codigos.push(cs[j] ?? '');
+      }
+
+      // --- Phase 3: write to the Sheet (server) ---
+      setStage(3);
+      setMessage('');
+      const classified = gastos.map((g, i) => ({ ...g, codigo: codigos[i] ?? '' }));
+      const result = await postJson<SabProcessResult>('/api/process/apply', {
+        comunidad: prepared.comunidad,
+        hash: prepared.hash,
+        archivo: prepared.archivo,
+        already: prepared.already,
+        totalMovimientos: prepared.totalMovimientos,
+        ignorados: prepared.ignorados,
+        gastos: classified,
+      });
+
+      if (result.error) {
         setStatus('error');
         setMessage(result.error);
       } else {
@@ -82,10 +177,9 @@ export default function DropZone({
 
       onProcessed(result);
     } catch (err) {
-      clearInterval(timer);
-      console.error(err);
+      console.error('[DropZone]', err);
       setStatus('error');
-      setMessage('Error de red al procesar el archivo.');
+      setMessage(err instanceof Error ? err.message : 'Error procesando el archivo.');
     }
   }
 

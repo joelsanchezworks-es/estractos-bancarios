@@ -100,6 +100,30 @@ openssl rand -base64 32
 Google Sheets ID `1oMKW-2p-C53aZLH_sklXcefZJnpAEDGo` (variable
 `GOOGLE_SHEETS_ID`). La pestaña `48 ESC` es la plantilla base.
 
+> **Importante — debe ser un Google Sheet nativo.** El documento destino tiene
+> que ser un Google Sheet nativo, **no** un archivo Excel (`.xls`/`.xlsx`)
+> subido a Drive. La API de Google Sheets no puede operar sobre archivos Office
+> aunque estén almacenados en Drive. Si el documento se creó subiendo un `.xls`,
+> ábrelo en Google Drive → **Archivo → Guardar como Google Sheets** y usa el ID
+> del nuevo documento. Si no, verás el error: _«El documento de destino debe ser
+> un Google Sheet nativo…»_.
+
+### Procesamiento del PDF (cliente + servidor por fases)
+
+Para no superar los límites del plan hobby de Vercel (4,5 MB por petición y 10 s
+por función), el PDF se procesa así:
+
+1. **Navegador** — el texto del PDF se extrae en el cliente con `pdf.js`; al
+   servidor solo se envía el texto plano (mucho más pequeño que el PDF).
+2. **`/api/process/parse`** — valida el Sheet destino, detecta duplicados y
+   separa gastos de ingresos.
+3. **`/api/process/classify`** — clasifica los conceptos en lotes cortos.
+4. **`/api/process/apply`** — actualiza las celdas del Sheet.
+
+Cada fase es una petición corta, muy por debajo del límite de 10 s. Los errores
+se devuelven siempre como JSON con el mensaje exacto, que se muestra en la
+interfaz (ya no aparece un genérico «Error de red»).
+
 ---
 
 ## Despliegue en Vercel

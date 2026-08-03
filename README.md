@@ -97,7 +97,7 @@ openssl rand -base64 32
 
 ### Documento destino
 
-Google Sheets ID `1oMKW-2p-C53aZLH_sklXcefZJnpAEDGo` (variable
+Google Sheets ID `1LbZLL3w3TPPQyi34l8sK0byoyWS1W4_al00pfJ1M4a0` (variable
 `GOOGLE_SHEETS_ID`). La pestaña `48 ESC` es la plantilla base.
 
 > **Importante — debe ser un Google Sheet nativo.** El documento destino tiene
@@ -158,7 +158,7 @@ servicio** (no requiere que un humano inicie sesión).
    - `private_key` → `GOOGLE_PRIVATE_KEY`
 5. **Comparte los recursos con el email de la cuenta de servicio** (¡paso
    imprescindible!):
-   - Abre el **Google Sheet** (ID `1oMKW-2p-C53aZLH_sklXcefZJnpAEDGo`)
+   - Abre el **Google Sheet** (ID `1LbZLL3w3TPPQyi34l8sK0byoyWS1W4_al00pfJ1M4a0`)
      → **Compartir** → añade el `client_email` como **Editor**.
    - Abre la **carpeta de Drive** (ID `1A3LX320kw8kxbcjnznMVY_MPgMUKLTWz`) →
      **Compartir** → añade el `client_email` como **Lector**.
@@ -180,7 +180,7 @@ En **Project → Settings → Environment Variables**, añade (ver `.env.example
 | `ANTHROPIC_MODEL` | (opcional) por defecto `claude-sonnet-5` |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | `client_email` del JSON |
 | `GOOGLE_PRIVATE_KEY` | `private_key` del JSON (con `\n` literales) |
-| `GOOGLE_SHEETS_ID` | `1oMKW-2p-C53aZLH_sklXcefZJnpAEDGo` |
+| `GOOGLE_SHEETS_ID` | `1LbZLL3w3TPPQyi34l8sK0byoyWS1W4_al00pfJ1M4a0` |
 | `GOOGLE_DRIVE_FOLDER_ID` | `1A3LX320kw8kxbcjnznMVY_MPgMUKLTWz` |
 | `SUPERVISOR_EMAIL` | `joelsanchezworks@gmail.com` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | (opcional) para avisos por email |

@@ -1,37 +1,25 @@
 import { google, type sheets_v4 } from 'googleapis';
-import type { MovimientoClasificado } from './types';
+import {
+  isMonthHeader,
+  findMonthRowIndex,
+  monthColumnMap,
+  normalizeKey,
+  colToLetter,
+} from './codes';
 
+export const TEMPLATE_SHEET = '48 ESC';
 export const PENDIENTE_SHEET = 'Pendiente Revision';
-export const EXTRACTOS_SHEET = 'Extractos';
 const PROCESADOS_SHEET = '_Procesados';
 
-export const COMUNIDAD_HEADERS = [
-  'fecha',
-  'descripcion',
-  'importe',
-  'categoria',
-  'confianza',
-  'comunidad',
-  'archivo_origen',
-  'fecha_proceso',
-];
-
-export const PENDIENTE_HEADERS = [
-  'fecha',
-  'descripcion',
-  'importe',
-  'categoria_sugerida',
-  'confianza',
-  'comunidad',
-  'archivo_origen',
-  'fecha_proceso',
-  'categoria_final',
-];
-
+export const PENDIENTE_HEADERS = ['fecha', 'concepto', 'importe', 'comunidad', 'sugerencia'];
 const PROCESADOS_HEADERS = ['hash', 'archivo', 'fecha_proceso'];
 
-// System tabs excluded from per-community aggregation.
-export const SYSTEM_SHEETS = new Set([PENDIENTE_SHEET, EXTRACTOS_SHEET, PROCESADOS_SHEET]);
+// Tabs that are never treated as community tabs.
+export const SYSTEM_SHEETS = new Set([TEMPLATE_SHEET, PENDIENTE_SHEET, PROCESADOS_SHEET]);
+
+// ---------------------------------------------------------------------------
+// Auth / client
+// ---------------------------------------------------------------------------
 
 function getSpreadsheetId(): string {
   const id = process.env.GOOGLE_SHEETS_ID;
@@ -60,151 +48,230 @@ function getSheets(): sheets_v4.Sheets {
   return sheetsClient;
 }
 
-/** Returns the list of tab titles in the spreadsheet. */
-export async function getSheetTitles(): Promise<string[]> {
-  const sheets = getSheets();
-  const res = await sheets.spreadsheets.get({
-    spreadsheetId: getSpreadsheetId(),
-    fields: 'sheets.properties.title',
-  });
-  return (res.data.sheets ?? [])
-    .map((s) => s.properties?.title)
-    .filter((t): t is string => Boolean(t));
+/** Retries a Google Sheets operation up to `retries` times with backoff. */
+async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries - 1) {
+        await new Promise((r) => setTimeout(r, 200 * 2 ** attempt));
+      }
+    }
+  }
+  throw lastErr;
 }
 
-/** Ensures a tab exists and its header row is present. */
-async function ensureSheet(title: string, headers: string[]): Promise<void> {
-  const sheets = getSheets();
-  const spreadsheetId = getSpreadsheetId();
-
-  const titles = await getSheetTitles();
-  if (!titles.includes(title)) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: { requests: [{ addSheet: { properties: { title } } }] },
-    });
-  }
-
-  // Write headers if the first row is empty.
-  const first = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `${quoteRange(title)}!A1:A1`,
-  });
-  const hasHeader = (first.data.values?.[0]?.length ?? 0) > 0;
-  if (!hasHeader) {
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `${quoteRange(title)}!A1`,
-      valueInputOption: 'RAW',
-      requestBody: { values: [headers] },
-    });
-  }
-}
-
-/** Quotes a sheet title for use in an A1 range (handles spaces/special chars). */
+/** Quotes a sheet title for use in an A1 range. */
 function quoteRange(title: string): string {
   return `'${title.replace(/'/g, "''")}'`;
 }
 
-async function appendRows(title: string, rows: (string | number)[][]): Promise<void> {
-  if (rows.length === 0) return;
-  const sheets = getSheets();
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: getSpreadsheetId(),
-    range: `${quoteRange(title)}!A1`,
-    valueInputOption: 'RAW',
-    insertDataOption: 'INSERT_ROWS',
-    requestBody: { values: rows },
-  });
+/** Builds an absolute A1 range for a single cell (0-based row/col). */
+export function cellA1(title: string, row0: number, col0: number): string {
+  return `${quoteRange(title)}!${colToLetter(col0)}${row0 + 1}`;
 }
 
-/** Appends classified movements to their community tab. */
-export async function writeComunidadRows(
-  comunidad: string,
-  movimientos: MovimientoClasificado[],
-  archivo: string,
-  fechaProceso: string,
-): Promise<void> {
-  if (movimientos.length === 0) return;
-  await ensureSheet(comunidad, COMUNIDAD_HEADERS);
-  const rows = movimientos.map((m) => [
-    m.fecha,
-    m.descripcion,
-    m.importe,
-    m.categoria,
-    m.confianza,
-    comunidad,
-    archivo,
-    fechaProceso,
-  ]);
-  await appendRows(comunidad, rows);
+// ---------------------------------------------------------------------------
+// Metadata / reads
+// ---------------------------------------------------------------------------
+
+async function getSheetMeta(): Promise<{ title: string; sheetId: number }[]> {
+  const res = await withRetry(() =>
+    getSheets().spreadsheets.get({
+      spreadsheetId: getSpreadsheetId(),
+      fields: 'sheets.properties(sheetId,title)',
+    }),
+  );
+  return (res.data.sheets ?? [])
+    .map((s) => ({ title: s.properties?.title ?? '', sheetId: s.properties?.sheetId ?? -1 }))
+    .filter((s) => s.title !== '' && s.sheetId >= 0);
 }
+
+export async function getSheetTitles(): Promise<string[]> {
+  return (await getSheetMeta()).map((s) => s.title);
+}
+
+type RenderOption = 'UNFORMATTED_VALUE' | 'FORMULA' | 'FORMATTED_VALUE';
+
+/** Reads a whole tab as a 2D array. */
+export async function getGrid(
+  title: string,
+  render: RenderOption = 'UNFORMATTED_VALUE',
+): Promise<unknown[][]> {
+  const res = await withRetry(() =>
+    getSheets().spreadsheets.values.get({
+      spreadsheetId: getSpreadsheetId(),
+      range: quoteRange(title),
+      valueRenderOption: render,
+    }),
+  );
+  return (res.data.values ?? []) as unknown[][];
+}
+
+export async function getValues(range: string): Promise<string[][]> {
+  const res = await withRetry(() =>
+    getSheets().spreadsheets.values.get({ spreadsheetId: getSpreadsheetId(), range }),
+  );
+  return (res.data.values ?? []) as string[][];
+}
+
+// ---------------------------------------------------------------------------
+// Community tab management (copy template / clear / header)
+// ---------------------------------------------------------------------------
 
 /**
- * Appends every classified movement (regardless of category or review flag) to
- * the global "Extractos" summary tab — a master ledger of all communities.
+ * Ensures a community tab exists. If missing, duplicates the "48 ESC" template,
+ * clears its numeric values (keeping the structure: codes, descriptions,
+ * headers and TOTAL formulas) and writes the community name into the header.
  */
-export async function writeExtractosRows(
-  comunidad: string,
-  movimientos: MovimientoClasificado[],
-  archivo: string,
-  fechaProceso: string,
-): Promise<void> {
-  if (movimientos.length === 0) return;
-  await ensureSheet(EXTRACTOS_SHEET, COMUNIDAD_HEADERS);
-  const rows = movimientos.map((m) => [
-    m.fecha,
-    m.descripcion,
-    m.importe,
-    m.categoria,
-    m.confianza,
-    comunidad,
-    archivo,
-    fechaProceso,
-  ]);
-  await appendRows(EXTRACTOS_SHEET, rows);
+export async function ensureCommunityTab(nombre: string): Promise<{ created: boolean }> {
+  const meta = await getSheetMeta();
+  if (meta.some((s) => s.title === nombre)) return { created: false };
+
+  const template = meta.find((s) => s.title === TEMPLATE_SHEET);
+  if (!template) {
+    throw new Error(`No se encuentra la pestaña plantilla "${TEMPLATE_SHEET}"`);
+  }
+
+  await withRetry(() =>
+    getSheets().spreadsheets.batchUpdate({
+      spreadsheetId: getSpreadsheetId(),
+      requestBody: {
+        requests: [
+          { duplicateSheet: { sourceSheetId: template.sheetId, newSheetName: nombre } },
+        ],
+      },
+    }),
+  );
+
+  await clearTemplateValues(nombre);
+
+  // Update the header (row 1) with the new community name.
+  await withRetry(() =>
+    getSheets().spreadsheets.values.update({
+      spreadsheetId: getSpreadsheetId(),
+      range: `${quoteRange(nombre)}!A1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [[nombre]] },
+    }),
+  );
+
+  return { created: true };
 }
 
-/** Appends flagged movements to the "Pendiente Revision" tab. */
-export async function writePendienteRows(
-  comunidad: string,
-  movimientos: MovimientoClasificado[],
-  archivo: string,
-  fechaProceso: string,
+/** Clears numeric amounts in month columns, keeping structure/formulas/TOTAL. */
+async function clearTemplateValues(title: string): Promise<void> {
+  const grid = await getGrid(title, 'FORMULA');
+  const monthRow = findMonthRowIndex(grid);
+  if (monthRow < 0) return;
+
+  const monthCols = (grid[monthRow] ?? [])
+    .map((v, i) => (isMonthHeader(v) ? i : -1))
+    .filter((i) => i >= 0);
+  if (monthCols.length === 0) return;
+
+  const ranges: string[] = [];
+  for (let r = monthRow + 1; r < grid.length; r++) {
+    const label = normalizeKey(`${grid[r]?.[0] ?? ''} ${grid[r]?.[1] ?? ''}`);
+    if (label.includes('total')) continue; // never touch TOTAL rows
+    for (const c of monthCols) {
+      const v = grid[r]?.[c];
+      if (v === undefined || v === null || v === '') continue;
+      if (typeof v === 'string' && v.startsWith('=')) continue; // keep formulas
+      ranges.push(cellA1(title, r, c));
+    }
+  }
+
+  if (ranges.length === 0) return;
+  await withRetry(() =>
+    getSheets().spreadsheets.values.batchClear({
+      spreadsheetId: getSpreadsheetId(),
+      requestBody: { ranges },
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cell updates (never creates rows; only writes existing cells)
+// ---------------------------------------------------------------------------
+
+export async function applyCellUpdates(
+  updates: { a1: string; value: number }[],
 ): Promise<void> {
-  if (movimientos.length === 0) return;
+  if (updates.length === 0) return;
+  await withRetry(() =>
+    getSheets().spreadsheets.values.batchUpdate({
+      spreadsheetId: getSpreadsheetId(),
+      requestBody: {
+        valueInputOption: 'RAW',
+        data: updates.map((u) => ({ range: u.a1, values: [[u.value]] })),
+      },
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Generic system-tab helpers, pending review, dedup
+// ---------------------------------------------------------------------------
+
+async function ensureSheet(title: string, headers: string[]): Promise<void> {
+  const titles = await getSheetTitles();
+  if (!titles.includes(title)) {
+    await withRetry(() =>
+      getSheets().spreadsheets.batchUpdate({
+        spreadsheetId: getSpreadsheetId(),
+        requestBody: { requests: [{ addSheet: { properties: { title } } }] },
+      }),
+    );
+  }
+  const first = await withRetry(() =>
+    getSheets().spreadsheets.values.get({
+      spreadsheetId: getSpreadsheetId(),
+      range: `${quoteRange(title)}!A1:A1`,
+    }),
+  );
+  if ((first.data.values?.[0]?.length ?? 0) === 0) {
+    await withRetry(() =>
+      getSheets().spreadsheets.values.update({
+        spreadsheetId: getSpreadsheetId(),
+        range: `${quoteRange(title)}!A1`,
+        valueInputOption: 'RAW',
+        requestBody: { values: [headers] },
+      }),
+    );
+  }
+}
+
+export async function appendPendiente(rows: (string | number)[][]): Promise<void> {
+  if (rows.length === 0) return;
   await ensureSheet(PENDIENTE_SHEET, PENDIENTE_HEADERS);
-  const rows = movimientos.map((m) => [
-    m.fecha,
-    m.descripcion,
-    m.importe,
-    m.categoria,
-    m.confianza,
-    comunidad,
-    archivo,
-    fechaProceso,
-    'PENDIENTE',
-  ]);
-  await appendRows(PENDIENTE_SHEET, rows);
+  await withRetry(() =>
+    getSheets().spreadsheets.values.append({
+      spreadsheetId: getSpreadsheetId(),
+      range: `${quoteRange(PENDIENTE_SHEET)}!A1`,
+      valueInputOption: 'RAW',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: rows },
+    }),
+  );
 }
-
-// ---------------------------------------------------------------------------
-// Duplicate detection (file hashes stored in a system tab)
-// ---------------------------------------------------------------------------
 
 export async function isDuplicate(hash: string): Promise<boolean> {
   try {
     await ensureSheet(PROCESADOS_SHEET, PROCESADOS_HEADERS);
-    const sheets = getSheets();
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: getSpreadsheetId(),
-      range: `${quoteRange(PROCESADOS_SHEET)}!A2:A`,
-    });
-    const hashes = (res.data.values ?? []).map((r) => r[0]);
-    return hashes.includes(hash);
+    const res = await withRetry(() =>
+      getSheets().spreadsheets.values.get({
+        spreadsheetId: getSpreadsheetId(),
+        range: `${quoteRange(PROCESADOS_SHEET)}!A2:A`,
+      }),
+    );
+    return (res.data.values ?? []).some((r) => r[0] === hash);
   } catch (err) {
     console.error('[sheets] Error comprobando duplicados:', err);
-    return false; // fail open: better to reprocess than to lose data
+    return false; // fail open
   }
 }
 
@@ -214,15 +281,17 @@ export async function recordHash(
   fechaProceso: string,
 ): Promise<void> {
   await ensureSheet(PROCESADOS_SHEET, PROCESADOS_HEADERS);
-  await appendRows(PROCESADOS_SHEET, [[hash, archivo, fechaProceso]]);
+  await withRetry(() =>
+    getSheets().spreadsheets.values.append({
+      spreadsheetId: getSpreadsheetId(),
+      range: `${quoteRange(PROCESADOS_SHEET)}!A1`,
+      valueInputOption: 'RAW',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [[hash, archivo, fechaProceso]] },
+    }),
+  );
 }
 
-/**
- * Returns the most recently processed file (name + ISO timestamp) from the
- * `_Procesados` registry, or null. This is the authoritative "last extract"
- * source: it is populated for every file, even when all movements ended up in
- * the review tab.
- */
 export async function getUltimoProcesado(): Promise<{
   archivo: string;
   fecha: string;
@@ -230,7 +299,6 @@ export async function getUltimoProcesado(): Promise<{
   try {
     const titles = await getSheetTitles();
     if (!titles.includes(PROCESADOS_SHEET)) return null;
-
     const rows = await getValues(`${quoteRange(PROCESADOS_SHEET)}!A2:C`);
     let latest: { archivo: string; fecha: string } | null = null;
     for (const r of rows) {
@@ -245,40 +313,6 @@ export async function getUltimoProcesado(): Promise<{
     console.error('[sheets] Error leyendo último procesado:', err);
     return null;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Read helpers for statistics
-// ---------------------------------------------------------------------------
-
-/** Reads a single range as a 2D string array. */
-export async function getValues(range: string): Promise<string[][]> {
-  const sheets = getSheets();
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: getSpreadsheetId(),
-    range,
-  });
-  return (res.data.values ?? []) as string[][];
-}
-
-/** Reads many ranges in a single batch call. */
-export async function batchGetValues(
-  ranges: string[],
-): Promise<{ range: string; values: string[][] }[]> {
-  if (ranges.length === 0) return [];
-  const sheets = getSheets();
-  const res = await sheets.spreadsheets.values.batchGet({
-    spreadsheetId: getSpreadsheetId(),
-    ranges,
-  });
-  return (res.data.valueRanges ?? []).map((vr) => ({
-    range: vr.range ?? '',
-    values: (vr.values ?? []) as string[][],
-  }));
-}
-
-export function quoteSheetRange(title: string, a1: string): string {
-  return `${quoteRange(title)}!${a1}`;
 }
 
 export function getSheetUrl(): string {

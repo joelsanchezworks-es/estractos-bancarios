@@ -1,22 +1,23 @@
 'use client';
 
 import { useRef, useState, type DragEvent } from 'react';
-import type { ProcessResult } from '@/lib/types';
+import type { SabProcessResult } from '@/lib/types';
 
 const STAGES = [
-  '📂 Leyendo archivo…',
-  '🤖 Claude clasificando…',
-  '📊 Escribiendo en Sheets…',
+  '📄 Leyendo PDF del Sabadell…',
+  '📋 Verificando pestaña en Sheet…',
+  '🤖 Clasificando movimientos con Claude…',
+  '✍️ Actualizando celdas en Sheet…',
 ];
 
-const ACCEPTED = ['.xls', '.xlsx', '.csv', '.pdf'];
+const ACCEPTED = ['.pdf'];
 
 type Status = 'idle' | 'processing' | 'done' | 'error';
 
 export default function DropZone({
   onProcessed,
 }: {
-  onProcessed: (result: ProcessResult) => void;
+  onProcessed: (result: SabProcessResult) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<Status>('idle');
@@ -33,7 +34,7 @@ export default function DropZone({
   async function handleFile(file: File) {
     if (!hasValidExtension(file.name)) {
       setStatus('error');
-      setMessage('Formato no soportado. Usa XLS, XLSX, CSV o PDF.');
+      setMessage('Solo se admiten extractos PDF del Banco Sabadell.');
       return;
     }
 
@@ -63,17 +64,19 @@ export default function DropZone({
         return;
       }
 
-      const result = data as ProcessResult;
-      setStatus('done');
+      const result = data as SabProcessResult;
 
       if (result.duplicado) {
-        setMessage('Este archivo ya se había procesado (duplicado).');
-      } else if (result.total === 0) {
-        setMessage('No se detectaron movimientos en el archivo.');
+        setStatus('done');
+        setMessage('Este PDF ya se había procesado (duplicado). Marca "Forzar reproceso" para repetirlo.');
+      } else if (result.error) {
+        setStatus('error');
+        setMessage(result.error);
       } else {
+        setStatus('done');
         setMessage(
-          `${result.total} movimiento(s) procesados en ${result.comunidad}` +
-            (result.pendientes > 0 ? ` · ${result.pendientes} pendiente(s)` : ''),
+          `✅ Completado — ${result.comunidad}: ${result.celdasActualizadas} celda(s) actualizada(s)` +
+            (result.pendientes.length > 0 ? ` · ${result.pendientes.length} pendiente(s)` : ''),
         );
       }
 
@@ -133,14 +136,14 @@ export default function DropZone({
           <line x1="12" y1="3" x2="12" y2="15" />
         </svg>
         <p className="mt-4 text-lg font-medium text-white">
-          Arrastra el extracto XLS, CSV o PDF aquí
+          Arrastra el extracto PDF del Sabadell aquí
         </p>
         <p className="mt-1 text-sm text-neutral-400">o haz clic para seleccionar archivo</p>
 
         <input
           ref={inputRef}
           type="file"
-          accept=".xls,.xlsx,.csv,.pdf"
+          accept=".pdf"
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];

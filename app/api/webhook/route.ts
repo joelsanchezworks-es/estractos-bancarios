@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { getDriveFile, listFolderFiles } from '@/lib/drive';
-import { processFileBuffer } from '@/lib/pipeline';
-import type { ProcessResult } from '@/lib/types';
+import { processSabadellPdf } from '@/lib/pipeline';
+import type { SabProcessResult } from '@/lib/types';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -46,12 +46,12 @@ export async function POST(req: NextRequest) {
     // No JSON body (typical for Drive notifications) — fall back to folder scan.
   }
 
-  const results: ProcessResult[] = [];
+  const results: SabProcessResult[] = [];
 
   try {
     if (fileId) {
       const { name, buffer } = await getDriveFile(fileId);
-      results.push(await processFileBuffer(buffer, name));
+      results.push(await processSabadellPdf(buffer, name));
     } else {
       const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
       if (!folderId) {
@@ -66,11 +66,11 @@ export async function POST(req: NextRequest) {
 
       for (const f of files) {
         if (processedNew >= MAX_FILES_PER_CALL) break;
-        // Skip Google-native docs (Sheets/Docs) — only real uploads.
-        if (f.mimeType?.startsWith('application/vnd.google-apps')) continue;
+        // Only Sabadell PDFs.
+        if (!f.name.toLowerCase().endsWith('.pdf')) continue;
 
         const { name, buffer } = await getDriveFile(f.id);
-        const result = await processFileBuffer(buffer, name);
+        const result = await processSabadellPdf(buffer, name);
         results.push(result);
         if (!result.duplicado) processedNew++;
       }

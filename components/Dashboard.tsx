@@ -2,12 +2,11 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { signOut } from 'next-auth/react';
-import type { ProcessResult, StatsResponse } from '@/lib/types';
+import type { SabProcessResult, StatsResponse } from '@/lib/types';
 import StatsBar from './StatsBar';
 import DropZone from './DropZone';
 import ResultsTable from './ResultsTable';
 import CommunityList from './CommunityList';
-import SpendingChart from './SpendingChart';
 
 function formatEur(n: number): string {
   return new Intl.NumberFormat('es-ES', {
@@ -25,7 +24,7 @@ export default function Dashboard({
 }) {
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [lastResult, setLastResult] = useState<ProcessResult | null>(null);
+  const [lastResult, setLastResult] = useState<SabProcessResult | null>(null);
 
   const loadStats = useCallback(async () => {
     try {
@@ -46,10 +45,10 @@ export default function Dashboard({
   }, [loadStats]);
 
   const handleProcessed = useCallback(
-    (result: ProcessResult) => {
+    (result: SabProcessResult) => {
       setLastResult(result);
       // Refresh aggregated stats after a successful, non-duplicate import.
-      if (!result.duplicado) loadStats();
+      if (!result.duplicado && !result.error) loadStats();
     },
     [loadStats],
   );
@@ -108,7 +107,7 @@ export default function Dashboard({
           {/* Left column (60%) */}
           <div className="space-y-6 lg:col-span-3">
             <DropZone onProcessed={handleProcessed} />
-            <ResultsTable movimientos={lastResult?.movimientos ?? []} />
+            <ResultsTable result={lastResult} />
           </div>
 
           {/* Right column (40%) */}
@@ -141,7 +140,8 @@ export default function Dashboard({
                             {p.descripcion || '—'}
                           </p>
                           <p className="text-xs text-neutral-500">
-                            {p.fecha} · {p.comunidad} · sugerida: {p.categoriaSugerida}
+                            {p.fecha} · {p.comunidad}
+                            {p.categoriaSugerida ? ` · ${p.categoriaSugerida}` : ''}
                           </p>
                         </div>
                         <span className="shrink-0 text-sm font-medium text-red-400">
@@ -177,8 +177,6 @@ export default function Dashboard({
                 <line x1="10" y1="14" x2="21" y2="3" />
               </svg>
             </a>
-
-            <SpendingChart data={stats?.gastosPorCategoria ?? []} />
           </div>
         </div>
       </main>

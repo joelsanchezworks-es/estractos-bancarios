@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { processFileBuffer } from '@/lib/pipeline';
+import { processSabadellPdf } from '@/lib/pipeline';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -24,9 +24,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      return NextResponse.json(
+        { error: 'Este sistema procesa extractos PDF del Banco Sabadell.' },
+        { status: 400 },
+      );
+    }
+
     const force = formData.get('force') === 'true';
     const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await processFileBuffer(buffer, file.name, { force });
+    const result = await processSabadellPdf(buffer, file.name, { force });
 
     return NextResponse.json(result);
   } catch (err) {

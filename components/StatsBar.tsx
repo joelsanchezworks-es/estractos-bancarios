@@ -52,19 +52,11 @@ export default function StatsBar({
   loading: boolean;
 }) {
   const pendientes = stats?.pendientesRevision ?? 0;
+  const comunidades = stats?.comunidades.length ?? 0;
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      <Card
-        label="Movimientos este mes"
-        value={String(stats?.totalMovimientosMes ?? 0)}
-        loading={loading}
-      />
-      <Card
-        label="Comunidades esta semana"
-        value={String(stats?.comunidadesSemana ?? 0)}
-        loading={loading}
-      />
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <Card label="Comunidades en el Sheet" value={String(comunidades)} loading={loading} />
       <Card
         label="Pendientes de revisión"
         value={String(pendientes)}

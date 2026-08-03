@@ -61,3 +61,44 @@ export interface PendienteResumen {
   categoriaSugerida: string;
   comunidad: string;
 }
+
+// ---------------------------------------------------------------------------
+// Sabadell PDF -> template-cell-update flow
+// ---------------------------------------------------------------------------
+
+/** One cell update produced by processing a movement. */
+export interface CeldaUpdate {
+  concepto: string;
+  codigo: string;
+  categoria: string; // code description
+  mes: string; // Catalan month column
+  importe: number; // positive (absolute) amount added
+  celdaAnterior: number;
+  celdaNueva: number;
+  celda: string; // A1 reference, e.g. "D7"
+}
+
+export interface PendienteItem {
+  fecha: string;
+  concepto: string;
+  importe: number;
+  comunidad: string;
+  sugerencia: string;
+}
+
+/** Result of processing a Sabadell PDF against the template Sheet. */
+export interface SabProcessResult {
+  comunidad: string;
+  archivo: string;
+  tabCreada: boolean;
+  duplicado: boolean;
+  totalMovimientos: number; // parsed from the PDF
+  ignorados: number; // income / IGNORAR
+  celdasActualizadas: number;
+  updates: CeldaUpdate[];
+  pendientes: PendienteItem[];
+  totalesPorCategoria: { categoria: string; total: number }[];
+  totalesPorMes: { mes: string; total: number }[];
+  sheetUrl: string;
+  error?: string;
+}

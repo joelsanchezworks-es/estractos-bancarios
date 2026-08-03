@@ -1,38 +1,39 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { normalizeCategoria } from './categories';
-import type { Confianza, MovimientoClasificado, MovimientoRaw } from './types';
 
 // The spec named claude-3-5-sonnet-20241022, which has since been retired.
-// We default to the current Sonnet (ideal for classification) and allow an
-// override via ANTHROPIC_MODEL.
+// We default to the current Sonnet and allow an override via ANTHROPIC_MODEL.
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
 
-const MAX_BATCH_SIZE = 50; // movements per Claude request
-const MAX_CHARS = 6000; // approx char budget per Claude request
+const MAX_BATCH_SIZE = 40; // concepts per Claude request
+const MAX_CHARS = 6000;
 
-const SYSTEM_PROMPT = `Eres un asistente contable especializado en comunidades de propietarios españolas y catalanas.
-Clasifica cada movimiento en UNA de estas categorías exactas: Luz, Agua, Seguro, Reparacion Electrica, Fontaneria, Jardineria, Limpieza, Cuotas, Otros.
+const SYSTEM_PROMPT = `Eres un clasificador contable de extractos del Banco Sabadell para comunidades de propietarios.
+Para CADA concepto de la lista, devuelve SOLO el código numérico correspondiente (como string con ceros a la izquierda, p. ej. "010") o la palabra "IGNORAR" si es un ingreso.
 
-MAPEO DE TÉRMINOS:
-- Electra, Electricitat, Llum, Electric → Luz
-- Aigua, Agua, Servaigua → Agua
-- Assegurança, Seguro, Segur → Seguro
-- Manteniment elèctric, Reparació, Elèctric BT → Reparacion Electrica
-- Fontaneria, Desatascos, Sifons → Fontaneria
-- Neteja, Limpieza → Limpieza
-- Jardí, Jardineria → Jardineria
-- Honoraris, Administració, Admin, IVA Admin → Cuotas
-- Ascensor, Mant. Ascensor, Extintors → Otros
-- Despeses banc, Banc, CAE, PRL → Otros
-- Cert. Digital, RMR, Protecció Dades → Otros
+MAPA DE CLASIFICACIÓN:
+010 = IBERDROLA, ELECTRICIDAD, ELECTRI
+011 = MANTENIMENT ELECTRIC, REPARACIO ELECTRICA
+020 = CICLE DE L'AIGUA, SERVEIS AIGUA, EPEL, TERRASSA AIGUES, AIG-
+030 = ASCENSORS EBYP, ASCENSOR, EBYP, ASZENDE, EVEREST FACILITY SERVICES
+040 = ZURICH SEGUROS, SEGUROS ZURICH, ASSEGURANÇA
+050 = PREVIFOC, EXTINTORS, OCA GLOBAL INSPECCIONES, MATERIAL CONTRA INCENDIOS
+060 = NETEJA, LIMPIEZA, MONTSERRAT PONCE
+140 = SIFONS, DESATASCOS, EGARA DESATASCOS
+174 = PROFESSIONAL GROUP CONVERSIA, CAE, PRL
+175 = CERT DIGITAL, CERTIFICAT DIGITAL
+200 = QUATRECASES, HONORARIS, FINCAS FORCADELL, ADMINISTRACIO, Z08
+201 = IVA ADMINISTRACIO, IVA ADMIN
+215 = PROTECCIO DADES, PROTECCION DATOS
+230 = IMPUESTO SOBRE COMISION, COMISIONES, INTERESES Y/O COMISIONES, GASTOS GEST DEV, IMPAGADO RECIBOS DOMICIL, VARIOS GASTOS CORREO
+231 = TRANSFERENCIA A (nombre persona/empresa)
 
-REGLAS IMPORTANTES:
-- Descripciones pueden venir en catalán, castellano o mezcla de ambos
-- Clasifica por CONCEPTO no por idioma
-- Solo revisar:true si es genuinamente ambiguo
-- Si el concepto es claro: confianza alta, revisar: false
-- Devuelve SOLO array JSON sin texto extra
-- Cada elemento: fecha (DD/MM/YYYY), descripcion, importe (negativo=gasto), categoria, confianza (alta/media/baja), revisar (boolean)`;
+IGNORAR (son ingresos, no gastos):
+- REMESA RECIBOS
+- TRANSFERENCIA DE (viene dinero)
+- Importes positivos
+
+Las descripciones pueden estar en catalán o castellano; clasifica por CONCEPTO, no por idioma.
+Devuelve SOLO un array JSON de strings, EXACTAMENTE uno por concepto y en el MISMO orden. Cada elemento es el código (p. ej. "010") o "IGNORAR". Sin texto extra, sin markdown, sin explicaciones.`;
 
 let client: Anthropic | null = null;
 function getClient(): Anthropic {
@@ -44,12 +45,6 @@ function getClient(): Anthropic {
   return client;
 }
 
-function normalizeConfianza(value: unknown): Confianza {
-  const v = String(value ?? '').trim().toLowerCase();
-  if (v === 'alta' || v === 'media' || v === 'baja') return v;
-  return 'baja';
-}
-
 /** Extracts a JSON array from a model response that may include stray text. */
 function extractJsonArray(text: string): unknown[] {
   const trimmed = text.trim();
@@ -57,7 +52,7 @@ function extractJsonArray(text: string): unknown[] {
     const parsed = JSON.parse(trimmed);
     if (Array.isArray(parsed)) return parsed;
   } catch {
-    // fall through to regex extraction
+    // fall through to bracket extraction
   }
   const start = trimmed.indexOf('[');
   const end = trimmed.lastIndexOf(']');
@@ -72,46 +67,35 @@ function extractJsonArray(text: string): unknown[] {
   return [];
 }
 
-/** Splits movements into batches bounded by count and character budget. */
-function makeBatches(movimientos: MovimientoRaw[]): MovimientoRaw[][] {
-  const batches: MovimientoRaw[][] = [];
-  let current: MovimientoRaw[] = [];
+function makeBatches(conceptos: string[]): { items: string[]; offset: number }[] {
+  const batches: { items: string[]; offset: number }[] = [];
+  let current: string[] = [];
+  let offset = 0;
   let chars = 0;
 
-  for (const mov of movimientos) {
-    const len = JSON.stringify(mov).length;
+  for (let i = 0; i < conceptos.length; i++) {
+    const len = conceptos[i].length + 4;
     if (current.length >= MAX_BATCH_SIZE || (current.length > 0 && chars + len > MAX_CHARS)) {
-      batches.push(current);
+      batches.push({ items: current, offset });
+      offset = i;
       current = [];
       chars = 0;
     }
-    current.push(mov);
+    current.push(conceptos[i]);
     chars += len;
   }
-  if (current.length > 0) batches.push(current);
+  if (current.length > 0) batches.push({ items: current, offset });
   return batches;
 }
 
-/** Marks a batch as "needs review / Otros" when classification fails. */
-function fallbackBatch(batch: MovimientoRaw[]): MovimientoClasificado[] {
-  return batch.map((mov) => ({
-    ...mov,
-    categoria: 'Otros',
-    confianza: 'baja' as Confianza,
-    revisar: true,
-  }));
-}
-
-async function classifyBatch(batch: MovimientoRaw[]): Promise<MovimientoClasificado[]> {
-  const userContent = `Clasifica estos ${batch.length} movimientos bancarios y devuelve el array JSON:\n${JSON.stringify(
-    batch,
-    null,
-    0,
+async function classifyBatch(items: string[]): Promise<string[]> {
+  const userContent = `Clasifica estos ${items.length} conceptos. Devuelve el array JSON de códigos (uno por concepto, mismo orden):\n${JSON.stringify(
+    items,
   )}`;
 
   const response = await getClient().messages.create({
     model: MODEL,
-    max_tokens: 8000,
+    max_tokens: 2000,
     system: SYSTEM_PROMPT,
     messages: [{ role: 'user', content: userContent }],
   });
@@ -122,49 +106,32 @@ async function classifyBatch(batch: MovimientoRaw[]): Promise<MovimientoClasific
     .join('\n');
 
   const parsed = extractJsonArray(text);
-
-  // Align results with the input by index. We trust the parser's fecha/importe
-  // (authoritative numeric values) and take category/confidence from Claude.
-  return batch.map((mov, i) => {
-    const item = parsed[i] as Record<string, unknown> | undefined;
-    if (!item || typeof item !== 'object') {
-      return { ...mov, categoria: 'Otros', confianza: 'baja' as Confianza, revisar: true };
-    }
-    const categoria = normalizeCategoria(item.categoria);
-    const confianza = normalizeConfianza(item.confianza);
-    // Flag for review if Claude asked for it or if confidence is low.
-    const revisar = item.revisar === true || confianza === 'baja';
-
-    return {
-      fecha: mov.fecha,
-      descripcion: mov.descripcion,
-      importe: mov.importe,
-      categoria,
-      confianza,
-      revisar,
-    };
+  return items.map((_, i) => {
+    const v = parsed[i];
+    return typeof v === 'string' ? v.trim() : '';
   });
 }
 
 /**
- * Classifies a list of movements, batching automatically. Errors in one batch
- * do not break the flow: those movements are flagged for review.
+ * Classifies bank concepts into category codes. Returns, for each input
+ * concept, a raw string: a numeric code (e.g. "010"), "IGNORAR", or "" when the
+ * batch could not be classified (the caller treats "" as pending review).
  */
-export async function classifyMovimientos(
-  movimientos: MovimientoRaw[],
-): Promise<MovimientoClasificado[]> {
-  if (movimientos.length === 0) return [];
+export async function classifyConceptos(conceptos: string[]): Promise<string[]> {
+  if (conceptos.length === 0) return [];
 
-  const batches = makeBatches(movimientos);
-  const results: MovimientoClasificado[] = [];
+  const batches = makeBatches(conceptos);
+  const results: string[] = new Array(conceptos.length).fill('');
 
   for (const batch of batches) {
     try {
-      const classified = await classifyBatch(batch);
-      results.push(...classified);
+      const codes = await classifyBatch(batch.items);
+      for (let i = 0; i < batch.items.length; i++) {
+        results[batch.offset + i] = codes[i] ?? '';
+      }
     } catch (err) {
-      console.error('[claude] Error clasificando lote:', err);
-      results.push(...fallbackBatch(batch));
+      console.error('[claude] Error clasificando lote de conceptos:', err);
+      // Leave as '' -> pending review.
     }
   }
 

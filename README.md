@@ -1,9 +1,13 @@
 # Extractos Bancarios
 
-Sistema completo de **clasificación automática de extractos bancarios** para una
-empresa de gestión de comunidades de propietarios. Sube un extracto (XLS, XLSX,
-CSV o PDF), Claude clasifica cada movimiento por categoría, y el resultado se
-escribe automáticamente en Google Sheets (una pestaña por comunidad).
+Sistema de **procesamiento automático de extractos del Banco Sabadell** para una
+empresa de gestión de comunidades de propietarios. Se sube un **PDF** del
+Sabadell; Claude clasifica cada movimiento en un **código de categoría**, y el
+sistema **actualiza las celdas** del documento Google Sheets de destino (una
+pestaña por comunidad, con formato fijo copiado de la plantilla `48 ESC`).
+
+El sistema **no crea filas nuevas**: solo actualiza (acumulando) las celdas de
+las filas de categoría ya definidas, en la columna del mes correspondiente.
 
 Acceso mediante panel web privado con login propio (un único usuario: el dueño).
 
@@ -52,47 +56,49 @@ openssl rand -base64 32
 
 ## Cómo funciona
 
-1. **Entrada** — arrastras un archivo al panel, o Google Drive dispara el webhook.
-2. **Parseo** (`lib/parser.ts`) — detecta el tipo y normaliza a
-   `[{ fecha, descripcion, importe }]`:
-   - **XLS/XLSX**: primera hoja (índice 0), detección automática de columnas
-     (`Fecha`, `Concepto`, `Importe`, o `Cargo`/`Abono` por separado). Si hay
-     `Cargo` y `Abono`, `importe = abono - cargo`.
-   - **CSV**: detección de delimitador (`,` o `;`), gestión de comillas,
-     codificación UTF-8 con respaldo latin-1.
-   - **PDF**: extracción de texto y búsqueda de patrones fecha + descripción +
-     importe.
-   - Limpieza de importes españoles: `"1.234,56"` → `1234.56`.
-3. **Clasificación** (`lib/claude.ts`) — Claude asigna una de las categorías
-   exactas: `Luz, Agua, Seguro, Reparacion Electrica, Fontaneria, Jardineria,
-   Limpieza, Cuotas, Otros`, con nivel de confianza y marca de revisión. Se
-   procesa en lotes (máx. 50 movimientos / ~6000 caracteres por petición). Los
-   errores no rompen el flujo: los movimientos afectados se marcan para revisión.
-4. **Escritura en Sheets** (`lib/sheets.ts`) — crea la pestaña de la comunidad si
-   no existe, añade cabeceras si está vacía. Movimientos correctos → pestaña de
-   la comunidad; movimientos con `revisar: true` → pestaña `Pendiente Revision`;
-   **todos** los movimientos → pestaña `Extractos` (libro maestro con todas las
-   comunidades, usado también para los contadores del dashboard).
-5. **Email** (`lib/email.ts`) — si hay pendientes, avisa a `SUPERVISOR_EMAIL`
-   (requiere SMTP configurado; si no, se omite sin romper el flujo).
-6. **Sin duplicados** — se guarda el hash SHA-256 de cada archivo en la pestaña
-   `_Procesados`; los archivos ya procesados se ignoran. Para reprocesar el mismo
-   archivo (p. ej. al hacer pruebas), marca **"Forzar reproceso"** en el panel
-   antes de subirlo. Para vaciar por completo el registro, elimina la pestaña
-   `_Procesados` del Google Sheet (se recrea sola en el siguiente procesado).
+1. **Entrada** — arrastras un **PDF del Sabadell** al panel, o Google Drive
+   dispara el webhook.
+2. **Lectura del PDF** (`lib/sabadell.ts`) — con `pdf-parse` se extrae el
+   encabezado (`Cuenta`, `Titular`, `Selección`) y los movimientos. Patrón de
+   cada movimiento: `F.Operativa  Concepto  F.Valor  Importe  Saldo  Ref1 Ref2`.
+   El **Titular** identifica la comunidad (= nombre de la pestaña).
+3. **Pestaña de la comunidad** (`lib/sheets.ts`) — si la pestaña no existe, se
+   **copia la plantilla `48 ESC`**, se renombra con el titular, se limpian sus
+   valores numéricos (dejando la estructura: códigos, descripciones, cabeceras y
+   fórmulas de TOTAL) y se actualiza el encabezado. Si ya existe, se usa tal cual.
+4. **Clasificación** (`lib/claude.ts`) — para cada gasto, Claude devuelve el
+   **código de categoría** (`010`, `020`, …) o `IGNORAR` (ingresos). Los importes
+   positivos (remesas, transferencias recibidas) se ignoran.
+5. **Actualización de celdas** (`lib/pipeline.ts`) — por cada gasto: se busca la
+   fila del código (columna A) y la columna del mes (fila 2, meses en catalán,
+   año fiscal set→ago según la fecha operativa) y se **suma** el importe (en
+   positivo) al valor existente de esa celda. **Nunca se crean filas.**
+6. **Pendientes** — si Claude no identifica el concepto, o no se encuentra la
+   celda destino, el movimiento va a la pestaña `Pendiente Revision`
+   (`fecha | concepto | importe | comunidad | sugerencia`).
+7. **Resumen** — el panel muestra una tabla
+   `Concepto | Categoría | Mes | Importe | Celda anterior | Celda nueva`, con
+   totales por categoría y por mes.
+8. **Sin duplicados** — se guarda el hash SHA-256 de cada PDF en `_Procesados`;
+   como los importes se **suman**, reprocesar exige marcar **"Forzar reproceso"**.
 
-### Convención de nombres
+### Estructura de la pestaña (plantilla `48 ESC`)
 
-`ComunidadRosas_20240115.xls` → comunidad = `ComunidadRosas` → pestaña
-`ComunidadRosas`.
+- **Fila 1**: encabezado (número de comunidad y dirección).
+- **Fila 2**: meses en catalán → `set oct nov des gener febrer març abr mai jun jul ago`.
+- **Filas de categoría** (columna A = código, columna B = descripción):
+  `010 Electra · 011 Manteniment elèctric BT · 020 Aigua · 030 Mant. Ascensor
+  ASZENDE · 040 Assegurança · 050 Extintors · 051 Extintors Revisió Trimestral ·
+  060 Neteja · 140 Mant. Sifons · 174 CAE (PRL) · 175 Cert. Digital · 200
+  Honoraris Admin · 201 IVA Administració · 215 Protecció Dades · 230 Despeses
+  banc · 231 Despeses RMR`.
+- **Fila TOTAL** y sección **Pagaments extraordinaris**: no se tocan (salvo que
+  un concepto mapee explícitamente a ellas).
 
-### Columnas en Sheets
+### Documento destino
 
-**Pestaña de comunidad:**
-`fecha | descripcion | importe | categoria | confianza | comunidad | archivo_origen | fecha_proceso`
-
-**Pestaña `Pendiente Revision`:**
-`fecha | descripcion | importe | categoria_sugerida | confianza | comunidad | archivo_origen | fecha_proceso | categoria_final`
+Google Sheets ID `1oMKW-2p-C53aZLH_sklXcefZJnpAEDGo` (variable
+`GOOGLE_SHEETS_ID`). La pestaña `48 ESC` es la plantilla base.
 
 ---
 
@@ -125,7 +131,7 @@ servicio** (no requiere que un humano inicie sesión).
    - `private_key` → `GOOGLE_PRIVATE_KEY`
 5. **Comparte los recursos con el email de la cuenta de servicio** (¡paso
    imprescindible!):
-   - Abre el **Google Sheet** (ID `1TgTz4VtfQJOUolWVUIUEj-yx4GjB27XgNGWQGVUe82M`)
+   - Abre el **Google Sheet** (ID `1oMKW-2p-C53aZLH_sklXcefZJnpAEDGo`)
      → **Compartir** → añade el `client_email` como **Editor**.
    - Abre la **carpeta de Drive** (ID `1A3LX320kw8kxbcjnznMVY_MPgMUKLTWz`) →
      **Compartir** → añade el `client_email` como **Lector**.
@@ -147,7 +153,7 @@ En **Project → Settings → Environment Variables**, añade (ver `.env.example
 | `ANTHROPIC_MODEL` | (opcional) por defecto `claude-sonnet-5` |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | `client_email` del JSON |
 | `GOOGLE_PRIVATE_KEY` | `private_key` del JSON (con `\n` literales) |
-| `GOOGLE_SHEETS_ID` | `1TgTz4VtfQJOUolWVUIUEj-yx4GjB27XgNGWQGVUe82M` |
+| `GOOGLE_SHEETS_ID` | `1oMKW-2p-C53aZLH_sklXcefZJnpAEDGo` |
 | `GOOGLE_DRIVE_FOLDER_ID` | `1A3LX320kw8kxbcjnznMVY_MPgMUKLTWz` |
 | `SUPERVISOR_EMAIL` | `joelsanchezworks@gmail.com` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | (opcional) para avisos por email |
@@ -190,15 +196,18 @@ También puedes procesar la carpeta manualmente con:
 curl -X POST "https://TU-APP.vercel.app/api/webhook?token=TU_WEBHOOK_SECRET"
 ```
 
-### Paso 6 — Primera prueba con un XLS real
+### Paso 6 — Primera prueba con un PDF real del Sabadell
 
-1. Entra en `https://TU-APP.vercel.app`, inicia sesión con `OWNER_EMAIL` /
+1. Asegúrate de que la pestaña **`48 ESC`** existe en el Google Sheet de destino
+   (es la plantilla que se copia para cada comunidad nueva).
+2. Entra en `https://TU-APP.vercel.app`, inicia sesión con `OWNER_EMAIL` /
    `OWNER_PASSWORD`.
-2. Arrastra un extracto real llamado, por ejemplo, `NombreComunidad_20240131.xls`.
-3. Verás la barra de progreso: *Leyendo → Claude clasificando → Escribiendo en
-   Sheets → Completado*, y la tabla de resultados.
-4. Abre el Google Sheet (botón **Ver Google Sheet completo**): habrá una pestaña
-   con el nombre de la comunidad y, si hubo dudas, filas en `Pendiente Revision`.
+3. Arrastra un extracto **PDF** real del Sabadell.
+4. Verás la barra de progreso: *Leyendo PDF → Verificando pestaña → Clasificando
+   → Actualizando celdas → Completado*, y la tabla resumen con las celdas
+   actualizadas (anterior → nueva).
+5. Abre el Google Sheet (botón **Ver Google Sheet completo**): la pestaña de la
+   comunidad tendrá las celdas actualizadas, y los dudosos en `Pendiente Revision`.
 
 ### Paso 7 — Cambiar el email y la contraseña del dueño
 

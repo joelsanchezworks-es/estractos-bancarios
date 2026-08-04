@@ -197,7 +197,7 @@ export default function DropZone({
         setWarn(true);
         setMessage(
           `⚠️ Comunidad no mapeada: "${result.titular ?? ''}". Se han escrito los importes en la pestaña ` +
-            `"${result.comunidad}" (${result.celdasActualizadas} celda(s)). Ve al Sheet de sistema → pestaña ` +
+            `"${result.comunidad}" (${result.celdasActualizadas} celda(s)). Ve al Sheet → pestaña ` +
             `"_Comunidades" y añade el nombre de la pestaña correspondiente en la columna B.`,
         );
       } else {

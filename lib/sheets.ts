@@ -15,29 +15,21 @@ export const PENDIENTE_HEADERS = ['fecha', 'concepto', 'importe', 'comunidad', '
 const PROCESADOS_HEADERS = ['hash', 'archivo', 'fecha_proceso'];
 const COMUNIDADES_HEADERS = ['titular', 'pestaña'];
 
-// Tabs that are never community tabs (relevant when client & system share a
-// spreadsheet via the single-var fallback). The template is a real community.
+// Bookkeeping tabs that live alongside the community tabs but are never
+// themselves communities (excluded from the dashboard list). The template
+// "48 ESC" is a real community, so it is not listed here.
 export const SYSTEM_SHEETS = new Set([PENDIENTE_SHEET, PROCESADOS_SHEET, COMUNIDADES_SHEET]);
 
 // ---------------------------------------------------------------------------
-// Spreadsheet IDs — two documents:
-//   CLIENTE  -> community tabs where expense cells are updated (+ template)
-//   SISTEMA  -> bookkeeping tabs (_Procesados, Pendiente Revision, _Comunidades)
-// Falls back to the legacy single GOOGLE_SHEETS_ID when the split vars are unset.
+// Spreadsheet ID — a single Google Sheet holds everything: the community tabs
+// (where expense cells are updated), the "48 ESC" template, and the bookkeeping
+// tabs (_Procesados, Pendiente Revision, _Comunidades). GOOGLE_SHEETS_ID is
+// accepted as a legacy fallback.
 // ---------------------------------------------------------------------------
 
-function getClientId(): string {
+function getSpreadsheetId(): string {
   const id = process.env.GOOGLE_SHEETS_ID_CLIENTE || process.env.GOOGLE_SHEETS_ID;
   if (!id) throw new Error('GOOGLE_SHEETS_ID_CLIENTE no configurado');
-  return id;
-}
-
-function getSystemId(): string {
-  const id =
-    process.env.GOOGLE_SHEETS_ID_SISTEMA ||
-    process.env.GOOGLE_SHEETS_ID_CLIENTE ||
-    process.env.GOOGLE_SHEETS_ID;
-  if (!id) throw new Error('GOOGLE_SHEETS_ID_SISTEMA no configurado');
   return id;
 }
 
@@ -208,46 +200,43 @@ async function ensureTabIn(spreadsheetId: string, title: string, headers: string
 }
 
 // ---------------------------------------------------------------------------
-// Public reads (CLIENT sheet)
+// Public reads (Sheet)
 // ---------------------------------------------------------------------------
 
-/** Community tab titles in the CLIENT sheet. */
+/** Community tab titles in the Sheet. */
 export async function getSheetTitles(): Promise<string[]> {
-  return titlesOf(getClientId());
+  return titlesOf(getSpreadsheetId());
 }
 
-/** Reads a whole tab of the CLIENT sheet as a 2D array. */
+/** Reads a whole tab of the Sheet as a 2D array. */
 export async function getGrid(
   title: string,
   render: RenderOption = 'UNFORMATTED_VALUE',
 ): Promise<unknown[][]> {
-  return gridOf(getClientId(), title, render);
+  return gridOf(getSpreadsheetId(), title, render);
 }
 
 /**
- * Verifies both destination sheets are native Google Sheets (not uploaded
- * .xls/.xlsx). Throws the friendly Office-file message otherwise. Fails fast
- * before any expensive work.
+ * Verifies the destination is a native Google Sheet (not an uploaded .xls/.xlsx).
+ * Throws the friendly Office-file message otherwise. Fails fast before any
+ * expensive work.
  */
 export async function assertNativeSheet(): Promise<void> {
-  const clientId = getClientId();
-  await metaOf(clientId);
-  const systemId = getSystemId();
-  if (systemId !== clientId) await metaOf(systemId);
+  await metaOf(getSpreadsheetId());
 }
 
 // ---------------------------------------------------------------------------
-// Community tab management (CLIENT sheet: copy template / clear / header)
+// Community tab management (Sheet: copy template / clear / header)
 // ---------------------------------------------------------------------------
 
 /**
- * Ensures a community tab exists in the CLIENT sheet. If missing, duplicates the
+ * Ensures a community tab exists in the Sheet. If missing, duplicates the
  * "48 ESC" template, clears its numeric values (keeping structure: codes,
  * descriptions, headers and TOTAL formulas) and writes the name into the header.
  */
 export async function ensureCommunityTab(nombre: string): Promise<{ created: boolean }> {
-  const clientId = getClientId();
-  const meta = await metaOf(clientId);
+  const id = getSpreadsheetId();
+  const meta = await metaOf(id);
   if (meta.some((s) => s.title === nombre)) return { created: false };
 
   const template = meta.find((s) => s.title === TEMPLATE_SHEET);
@@ -257,7 +246,7 @@ export async function ensureCommunityTab(nombre: string): Promise<{ created: boo
 
   await withRetry(() =>
     getSheets().spreadsheets.batchUpdate({
-      spreadsheetId: clientId,
+      spreadsheetId: id,
       requestBody: {
         requests: [
           { duplicateSheet: { sourceSheetId: template.sheetId, newSheetName: nombre } },
@@ -271,7 +260,7 @@ export async function ensureCommunityTab(nombre: string): Promise<{ created: boo
   // Update the header (row 1) with the new community name.
   await withRetry(() =>
     getSheets().spreadsheets.values.update({
-      spreadsheetId: clientId,
+      spreadsheetId: id,
       range: `${quoteRange(nombre)}!A1`,
       valueInputOption: 'RAW',
       requestBody: { values: [[nombre]] },
@@ -283,8 +272,8 @@ export async function ensureCommunityTab(nombre: string): Promise<{ created: boo
 
 /** Clears numeric amounts in month columns, keeping structure/formulas/TOTAL. */
 async function clearTemplateValues(title: string): Promise<void> {
-  const clientId = getClientId();
-  const grid = await gridOf(clientId, title, 'FORMULA');
+  const id = getSpreadsheetId();
+  const grid = await gridOf(id, title, 'FORMULA');
   const monthRow = findMonthRowIndex(grid);
   if (monthRow < 0) return;
 
@@ -308,14 +297,14 @@ async function clearTemplateValues(title: string): Promise<void> {
   if (ranges.length === 0) return;
   await withRetry(() =>
     getSheets().spreadsheets.values.batchClear({
-      spreadsheetId: clientId,
+      spreadsheetId: id,
       requestBody: { ranges },
     }),
   );
 }
 
 // ---------------------------------------------------------------------------
-// Cell updates (CLIENT sheet; never creates rows, only writes existing cells)
+// Cell updates (Sheet; never creates rows, only writes existing cells)
 // ---------------------------------------------------------------------------
 
 export async function applyCellUpdates(
@@ -324,7 +313,7 @@ export async function applyCellUpdates(
   if (updates.length === 0) return;
   await withRetry(() =>
     getSheets().spreadsheets.values.batchUpdate({
-      spreadsheetId: getClientId(),
+      spreadsheetId: getSpreadsheetId(),
       requestBody: {
         valueInputOption: 'RAW',
         data: updates.map((u) => ({ range: u.a1, values: [[u.value]] })),
@@ -334,11 +323,11 @@ export async function applyCellUpdates(
 }
 
 // ---------------------------------------------------------------------------
-// Titular -> tab mapping (_Comunidades, SYSTEM sheet)
+// Titular -> tab mapping (_Comunidades, Sheet)
 // ---------------------------------------------------------------------------
 
 export interface ComunidadResolution {
-  tab: string; // tab name to use in the CLIENT sheet
+  tab: string; // tab name to use in the Sheet
   titular: string; // original titular from the statement
   noMapeada: boolean; // true when there was no explicit mapping (pending)
 }
@@ -354,8 +343,8 @@ function normalizeTitular(s: string): string {
 }
 
 /**
- * Resolves the CLIENT-sheet tab for a bank titular using the _Comunidades map in
- * the SYSTEM sheet. If the titular is not mapped, records a pending row
+ * Resolves the Sheet tab for a bank titular using the _Comunidades map in
+ * the Sheet. If the titular is not mapped, records a pending row
  * (titular -> blank) and returns `noMapeada: true` with the fallback tab so the
  * caller can still process (and warn the user).
  */
@@ -363,10 +352,10 @@ export async function resolveComunidadTab(
   titular: string,
   fallbackTab: string,
 ): Promise<ComunidadResolution> {
-  const systemId = getSystemId();
+  const id = getSpreadsheetId();
   try {
-    await ensureTabIn(systemId, COMUNIDADES_SHEET, COMUNIDADES_HEADERS);
-    const rows = await valuesOf(systemId, `${quoteRange(COMUNIDADES_SHEET)}!A2:B`);
+    await ensureTabIn(id, COMUNIDADES_SHEET, COMUNIDADES_HEADERS);
+    const rows = await valuesOf(id, `${quoteRange(COMUNIDADES_SHEET)}!A2:B`);
     const key = normalizeTitular(titular);
 
     let hasRow = false;
@@ -383,7 +372,7 @@ export async function resolveComunidadTab(
     if (!hasRow) {
       await withRetry(() =>
         getSheets().spreadsheets.values.append({
-          spreadsheetId: systemId,
+          spreadsheetId: id,
           range: `${quoteRange(COMUNIDADES_SHEET)}!A1`,
           valueInputOption: 'RAW',
           insertDataOption: 'INSERT_ROWS',
@@ -400,16 +389,16 @@ export async function resolveComunidadTab(
 }
 
 // ---------------------------------------------------------------------------
-// Pending review, dedup, last-processed (SYSTEM sheet)
+// Pending review, dedup, last-processed (Sheet)
 // ---------------------------------------------------------------------------
 
 export async function appendPendiente(rows: (string | number)[][]): Promise<void> {
   if (rows.length === 0) return;
-  const systemId = getSystemId();
-  await ensureTabIn(systemId, PENDIENTE_SHEET, PENDIENTE_HEADERS);
+  const id = getSpreadsheetId();
+  await ensureTabIn(id, PENDIENTE_SHEET, PENDIENTE_HEADERS);
   await withRetry(() =>
     getSheets().spreadsheets.values.append({
-      spreadsheetId: systemId,
+      spreadsheetId: id,
       range: `${quoteRange(PENDIENTE_SHEET)}!A1`,
       valueInputOption: 'RAW',
       insertDataOption: 'INSERT_ROWS',
@@ -420,19 +409,19 @@ export async function appendPendiente(rows: (string | number)[][]): Promise<void
 
 /** Pending-review rows (fecha | concepto | importe | comunidad | sugerencia). */
 export async function getPendientesRows(): Promise<string[][]> {
-  const systemId = getSystemId();
-  const titles = await titlesOf(systemId);
+  const id = getSpreadsheetId();
+  const titles = await titlesOf(id);
   if (!titles.includes(PENDIENTE_SHEET)) return [];
-  return valuesOf(systemId, `${quoteRange(PENDIENTE_SHEET)}!A2:E`);
+  return valuesOf(id, `${quoteRange(PENDIENTE_SHEET)}!A2:E`);
 }
 
 export async function isDuplicate(hash: string): Promise<boolean> {
   try {
-    const systemId = getSystemId();
-    await ensureTabIn(systemId, PROCESADOS_SHEET, PROCESADOS_HEADERS);
+    const id = getSpreadsheetId();
+    await ensureTabIn(id, PROCESADOS_SHEET, PROCESADOS_HEADERS);
     const res = await withRetry(() =>
       getSheets().spreadsheets.values.get({
-        spreadsheetId: systemId,
+        spreadsheetId: id,
         range: `${quoteRange(PROCESADOS_SHEET)}!A2:A`,
       }),
     );
@@ -448,11 +437,11 @@ export async function recordHash(
   archivo: string,
   fechaProceso: string,
 ): Promise<void> {
-  const systemId = getSystemId();
-  await ensureTabIn(systemId, PROCESADOS_SHEET, PROCESADOS_HEADERS);
+  const id = getSpreadsheetId();
+  await ensureTabIn(id, PROCESADOS_SHEET, PROCESADOS_HEADERS);
   await withRetry(() =>
     getSheets().spreadsheets.values.append({
-      spreadsheetId: systemId,
+      spreadsheetId: id,
       range: `${quoteRange(PROCESADOS_SHEET)}!A1`,
       valueInputOption: 'RAW',
       insertDataOption: 'INSERT_ROWS',
@@ -466,10 +455,10 @@ export async function getUltimoProcesado(): Promise<{
   fecha: string;
 } | null> {
   try {
-    const systemId = getSystemId();
-    const titles = await titlesOf(systemId);
+    const id = getSpreadsheetId();
+    const titles = await titlesOf(id);
     if (!titles.includes(PROCESADOS_SHEET)) return null;
-    const rows = await valuesOf(systemId, `${quoteRange(PROCESADOS_SHEET)}!A2:C`);
+    const rows = await valuesOf(id, `${quoteRange(PROCESADOS_SHEET)}!A2:C`);
     let latest: { archivo: string; fecha: string } | null = null;
     for (const r of rows) {
       const fecha = r[2];

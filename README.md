@@ -95,33 +95,31 @@ openssl rand -base64 32
 - **Fila TOTAL** y sección **Pagaments extraordinaris**: no se tocan (salvo que
   un concepto mapee explícitamente a ellas).
 
-### Documentos destino (dos Sheets)
+### Documento destino (un solo Sheet)
 
-El sistema usa **dos** Google Sheets nativos:
+Todo vive en **un único** Google Sheet nativo, en la variable
+`GOOGLE_SHEETS_ID_CLIENTE` (`1LbZLL3w3TPPQyi34l8sK0byoyWS1W4_al00pfJ1M4a0`):
 
-| Variable | Documento | Contenido |
-| -------- | --------- | --------- |
-| `GOOGLE_SHEETS_ID_CLIENTE` | Sheet del cliente (`1LbZLL3w3TPPQyi34l8sK0byoyWS1W4_al00pfJ1M4a0`) | Pestañas por comunidad donde se actualizan las celdas de gastos. Plantilla base: `48 ESC`. Queda limpio, solo con las comunidades. |
-| `GOOGLE_SHEETS_ID_SISTEMA` | Sheet de sistema (`1TgTz4VtfQJOUolWVUIUEj-yx4GjB27XgNGWQGVUe82M`) | Pestañas internas: `_Procesados` (dedup), `Pendiente Revision`, `_Comunidades` (mapeo titular→pestaña). |
+- Pestañas por comunidad donde se actualizan las celdas de gastos (plantilla
+  base: `48 ESC`).
+- Pestañas internas: `_Procesados` (dedup), `Pendiente Revision`, `_Comunidades`
+  (mapeo titular→pestaña). Se crean solas la primera vez.
 
-> El **service account debe ser Editor en AMBOS** documentos, y los dos deben
-> ser **Google Sheets nativos** (no `.xls` subidos a Drive). Si defines solo
-> `GOOGLE_SHEETS_ID` (modo antiguo), ambos roles apuntan al mismo documento.
-
-> **Importante — deben ser Google Sheets nativos.** La API de Google Sheets no
-> puede operar sobre archivos Office (`.xls`/`.xlsx`) subidos a Drive. Si un
-> documento se creó subiendo un `.xls`, ábrelo en Google Drive → **Archivo →
-> Guardar como Google Sheets** y usa el ID del nuevo documento. Si no, verás:
-> _«El documento de destino debe ser un Google Sheet nativo…»_.
+> El **service account debe ser Editor** de ese documento y este debe ser un
+> **Google Sheet nativo**, **no** un archivo Excel (`.xls`/`.xlsx`) subido a
+> Drive. La API de Google Sheets no puede operar sobre archivos Office aunque
+> estén en Drive. Si se creó subiendo un `.xls`, ábrelo en Google Drive →
+> **Archivo → Guardar como Google Sheets** y usa el ID del nuevo documento. Si
+> no, verás: _«El documento de destino debe ser un Google Sheet nativo…»_.
 
 ### Mapeo de comunidades (`_Comunidades`)
 
 El titular del extracto del banco (p. ej. `C.P. PALET I BARBA 20, ESCALA C DE
 TERRASSA`) casi nunca coincide con el nombre de la pestaña (p. ej. `48 ESC`).
-En el Sheet de **sistema** hay una pestaña `_Comunidades` con dos columnas:
+En el mismo Sheet hay una pestaña `_Comunidades` con dos columnas:
 
 - **A**: titular exacto del banco.
-- **B**: nombre de la pestaña en el Sheet del cliente.
+- **B**: nombre de la pestaña de la comunidad.
 
 Antes de procesar, el sistema busca el titular en esta tabla y usa la pestaña
 indicada. Si el titular no está mapeado, procesa en una pestaña con el nombre
@@ -179,9 +177,7 @@ servicio** (no requiere que un humano inicie sesión).
    - `private_key` → `GOOGLE_PRIVATE_KEY`
 5. **Comparte los recursos con el email de la cuenta de servicio** (¡paso
    imprescindible!):
-   - Abre el **Sheet del cliente** (ID `1LbZLL3w3TPPQyi34l8sK0byoyWS1W4_al00pfJ1M4a0`)
-     → **Compartir** → añade el `client_email` como **Editor**.
-   - Abre el **Sheet de sistema** (ID `1TgTz4VtfQJOUolWVUIUEj-yx4GjB27XgNGWQGVUe82M`)
+   - Abre el **Google Sheet** (ID `1LbZLL3w3TPPQyi34l8sK0byoyWS1W4_al00pfJ1M4a0`)
      → **Compartir** → añade el `client_email` como **Editor**.
    - Abre la **carpeta de Drive** (ID `1A3LX320kw8kxbcjnznMVY_MPgMUKLTWz`) →
      **Compartir** → añade el `client_email` como **Lector**.
@@ -203,8 +199,7 @@ En **Project → Settings → Environment Variables**, añade (ver `.env.example
 | `ANTHROPIC_MODEL` | (opcional) por defecto `claude-sonnet-5` |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | `client_email` del JSON |
 | `GOOGLE_PRIVATE_KEY` | `private_key` del JSON (con `\n` literales) |
-| `GOOGLE_SHEETS_ID_CLIENTE` | Sheet del cliente `1LbZLL3w3TPPQyi34l8sK0byoyWS1W4_al00pfJ1M4a0` |
-| `GOOGLE_SHEETS_ID_SISTEMA` | Sheet de sistema `1TgTz4VtfQJOUolWVUIUEj-yx4GjB27XgNGWQGVUe82M` |
+| `GOOGLE_SHEETS_ID_CLIENTE` | Google Sheet `1LbZLL3w3TPPQyi34l8sK0byoyWS1W4_al00pfJ1M4a0` |
 | `GOOGLE_DRIVE_FOLDER_ID` | `1A3LX320kw8kxbcjnznMVY_MPgMUKLTWz` |
 | `SUPERVISOR_EMAIL` | `joelsanchezworks@gmail.com` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | (opcional) para avisos por email |

@@ -30,7 +30,7 @@ Acceso mediante panel web privado con login propio (un único usuario: el dueño
 
 > **Nota sobre el modelo de IA:** el proyecto se especificó con
 > `claude-3-5-sonnet-20241022`, que ha sido **retirado** por Anthropic. Por
-> defecto se usa el Sonnet actual (`claude-sonnet-5`), ideal para clasificación,
+> defecto se usa el Sonnet actual (`claude-sonnet-5-5`), ideal para clasificación,
 > configurable con la variable `ANTHROPIC_MODEL`.
 
 ---
@@ -196,7 +196,7 @@ En **Project → Settings → Environment Variables**, añade (ver `.env.example
 | `NEXTAUTH_SECRET` | `openssl rand -base64 32` |
 | `NEXTAUTH_URL` | URL pública, p. ej. `https://extractos-bancarios.vercel.app` |
 | `ANTHROPIC_API_KEY` | Clave de la API de Anthropic |
-| `ANTHROPIC_MODEL` | (opcional) por defecto `claude-sonnet-5` |
+| `ANTHROPIC_MODEL` | (opcional) por defecto `claude-sonnet-5-5` |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | `client_email` del JSON |
 | `GOOGLE_PRIVATE_KEY` | `private_key` del JSON (con `\n` literales) |
 | `GOOGLE_SHEETS_ID_CLIENTE` | Google Sheet `1LbZLL3w3TPPQyi34l8sK0byoyWS1W4_al00pfJ1M4a0` |

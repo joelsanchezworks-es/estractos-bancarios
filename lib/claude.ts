@@ -1,8 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 
-// The spec named claude-3-5-sonnet-20241022, which has since been retired.
-// We default to the current Sonnet and allow an override via ANTHROPIC_MODEL.
-const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
+// The spec named claude-3-5-sonnet-20241022, which has since been retired, and a
+// later default of "claude-sonnet-5" was INVALID (no such model id) — every
+// classification call 404'd, so every movement ended up in "Pendiente Revision".
+// Default to the current Sonnet; override with ANTHROPIC_MODEL if needed.
+const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5';
 
 const MAX_BATCH_SIZE = 40; // concepts per Claude request
 const MAX_CHARS = 6000;
@@ -124,6 +126,8 @@ export async function classifyConceptos(conceptos: string[]): Promise<string[]> 
 
   const batches = makeBatches(conceptos);
   const results: string[] = new Array(conceptos.length).fill('');
+  let failedBatches = 0;
+  let lastError: unknown = null;
 
   for (const batch of batches) {
     try {
@@ -132,9 +136,22 @@ export async function classifyConceptos(conceptos: string[]): Promise<string[]> 
         results[batch.offset + i] = codes[i] ?? '';
       }
     } catch (err) {
+      failedBatches += 1;
+      lastError = err;
       console.error('[claude] Error clasificando lote de conceptos:', err);
       // Leave as '' -> pending review.
     }
+  }
+
+  // If EVERY batch failed, this is a systemic problem (bad ANTHROPIC_MODEL id,
+  // missing/invalid ANTHROPIC_API_KEY, rate limit...). Surface it instead of
+  // silently sending every movement to "Pendiente Revision".
+  if (batches.length > 0 && failedBatches === batches.length) {
+    const detail = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(
+      `No se pudo clasificar ningún movimiento con Claude (modelo "${MODEL}"): ${detail}. ` +
+        'Revisa ANTHROPIC_API_KEY y ANTHROPIC_MODEL.',
+    );
   }
 
   return results;
